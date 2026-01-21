@@ -73,8 +73,8 @@ done
 # Load logging functions from config if available
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME=$(basename "${BASH_SOURCE[0]}" .sh)
-if [ -f "$SCRIPT_DIR/config.sh" ]; then
-    source "$SCRIPT_DIR/config.sh"
+if [ -f "$SCRIPT_DIR/../lib/config.sh" ]; then
+    source "$SCRIPT_DIR/../lib/config.sh"
     # Override log file name to be dynamic based on script name
     export LOG_DIR="${LOG_DIR:-./logs}"
     mkdir -p "$LOG_DIR"

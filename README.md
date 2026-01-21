@@ -1,12 +1,12 @@
-# scripts
+# finos-scripts
 
 Shell scripts to help manage GitHub org/repo automation (teams, users, repo creation, badges, maintainers).
 
-## What’s in here
+## What's in here
 
-- **Configuration**: `config.sh` (centralized settings + logging + validation helpers)
-- **Docs**: `CONFIGURATION.md`
-- **Common scripts**:
+- **Configuration**: `lib/config.sh` (centralized settings + logging + validation helpers)
+- **Docs**: `docs/CONFIGURATION.md`
+- **Scripts** (in `bin/`):
   - `create-repos.sh`: create repos from a template + apply branch protection + create teams
   - `add-teams.sh`, `add-team-to-repo.sh`: grant team access to repos
   - `add-users.sh`, `add-admins.sh`: add users/admins
@@ -25,12 +25,12 @@ Shell scripts to help manage GitHub org/repo automation (teams, users, repo crea
 
 1. Review and edit config:
 
-   - `config.sh` (org name, hackathon prefix, template repo, etc.)
+   - `lib/config.sh` (org name, hackathon prefix, template repo, etc.)
 
 2. Run a script (many support `--help` and/or `--dry-run`):
 
-   - `./create-repos.sh --help`
-   - `./create-repos.sh --dry-run`
+   - `./bin/create-repos.sh --help`
+   - `./bin/create-repos.sh --dry-run`
 
 ## Notes
 

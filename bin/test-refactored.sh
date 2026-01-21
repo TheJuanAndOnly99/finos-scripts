@@ -5,7 +5,7 @@
 
 # Load configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/config.sh"
+source "$SCRIPT_DIR/../lib/config.sh"
 
 # Initialize configuration
 init_config
@@ -16,13 +16,13 @@ echo
 # Test 1: Show help for create-repos.sh
 echo "1. Testing create-repos.sh help:"
 echo "--------------------------------"
-./create-repos.sh --help
+"$SCRIPT_DIR/create-repos.sh" --help
 echo
 
 # Test 2: Show help for add-teams.sh
 echo "2. Testing add-teams.sh help:"
 echo "-----------------------------"
-./add-teams.sh --help
+"$SCRIPT_DIR/add-teams.sh" --help
 echo
 
 # Test 3: Dry run for create-repos.sh (first 3 teams only)
@@ -32,7 +32,7 @@ echo "---------------------------------------------------"
 cat > test-create-repos.sh << 'EOF'
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/config.sh"
+source "$SCRIPT_DIR/../lib/config.sh"
 init_config
 
 # Test with only first 3 teams
@@ -60,7 +60,7 @@ echo
 echo "4. Testing add-teams.sh with custom parameters:"
 echo "-----------------------------------------------"
 echo "This would add 'finos-staff' team with 'triage' permission to repositories containing 'learnaix-h-2025'"
-echo "Command: ./add-teams.sh --teams finos-staff --permission triage --filter learnaix-h-2025"
+echo "Command: ./bin/add-teams.sh --teams finos-staff --permission triage --filter learnaix-h-2025"
 echo
 echo "Note: This is a dry run demonstration. Actual execution would modify repositories."
 echo
