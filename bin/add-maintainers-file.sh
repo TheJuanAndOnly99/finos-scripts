@@ -39,7 +39,7 @@ If you notice any issues or missing information, please either:
 Thank you for your review!"
 
 # Script-specific configuration
-DRY_RUN=false
+DRY_RUN=true
 SKIP_EXISTING_PR=true
 TEST_REPO="finos/software-project-blueprint"
 

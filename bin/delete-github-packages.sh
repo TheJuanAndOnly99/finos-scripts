@@ -20,7 +20,7 @@ REPOS=("fluxnova-bpm-platform-formation" "fluxnova-feel-scala-formation" "fluxno
 PACKAGE_TYPES=("maven" "container")
 
 # Dry-run mode: set to true to only list packages without deleting
-DRY_RUN=false
+DRY_RUN=true
 
 for PACKAGE_TYPE in "${PACKAGE_TYPES[@]}"; do
     echo "==========================="
