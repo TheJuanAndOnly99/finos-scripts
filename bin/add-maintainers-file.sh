@@ -1,5 +1,16 @@
 #!/bin/bash
 
+# This script is used to add a MAINTAINERS.md file to all repositories in the organization
+# The MAINTAINERS.md file lists all repository maintainers
+# The maintainers are determined from:
+# - Users with \`maintain\` role on the repository
+# - Teams with \`maintain\` role on the repository (excluding FINOS organization teams)
+# The maintainers are listed in the MAINTAINERS.md file with their GitHub username, name, and email from their GitHub profile.
+
+# The script creates a PR to add the MAINTAINERS.md file to the repository
+# The PR is created with the title "Add MAINTAINERS.md file"
+# The PR is created with the body "This PR adds a MAINTAINERS.md file listing all repository maintainers.... (see below for more details)"
+
 # Organizations to process
 ORGS=("finos")
 
