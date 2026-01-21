@@ -1,0 +1,16 @@
+# Logs / local output
+logs/
+*.log
+
+# Local env / secrets
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Temporary test artifacts (some scripts generate these)
+test-create-repos.sh
+
