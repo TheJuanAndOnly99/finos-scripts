@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# This script is used to add teams to repositories in the organization
+
 # Load configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/config.sh"

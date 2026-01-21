@@ -1,5 +1,7 @@
 #!/bin/bash
 
+## This script is used to delete all packages of a given type from a given organization and repository
+
 # Check if GitHub PAT is provided
 if [ -z "$GITHUB_PAT" ]; then
     echo "Error: GITHUB_PAT environment variable is not set"

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# This script is used to create repositories for hackathon teams.
+
 # Load configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/config.sh"
@@ -52,7 +54,7 @@ REPOS=(
 )
 
 # Script-specific configuration
-DRY_RUN=false
+DRY_RUN=true
 SKIP_EXISTING=true
 
 # Parse command line arguments

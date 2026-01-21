@@ -1,6 +1,7 @@
 #!/bin/bash
 
-## This script is used to make repositories in the organization public that are prefixed with the given prefix
+# This script is used to make repositories in the organization public that are prefixed with the given prefix
+
 ORG=""
 PREFIX=""
 

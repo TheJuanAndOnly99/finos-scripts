@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# This script is used to update the badges in the finos-labs organization
+
 # Organizations to process
 ORGS=("finos-labs")
 

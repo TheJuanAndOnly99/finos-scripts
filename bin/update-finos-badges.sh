@@ -1,7 +1,9 @@
 #!/bin/bash
 
+# This script is used to update the badges in the finos organization
+
 # Organizations to process
-ORGS=()
+ORGS=("finos")
 
 # Badge URL replacement (for finos org badges)
 # Base URL
@@ -27,7 +29,7 @@ PR_BODY="This PR updates the badge link from \`/stages/\` to \`/project-lifecycl
 - Note: \`active\` stage has been changed to \`graduated\`"
 
 # Script-specific configuration
-DRY_RUN=false
+DRY_RUN=true
 SKIP_EXISTING_PR=true
 TEST_REPO="finos/software-project-blueprint"
 
