@@ -128,6 +128,7 @@ REPOS_SKIPPED=()
 REPOS_NO_CHANGES=()
 REPOS_WITH_ERRORS=()
 REPOS_NO_MAINTAINERS=()
+REPOS_FILE_EXISTS=()  # Repos where MAINTAINERS.md already exists (needs manual validation)
 
 log_info "Starting MAINTAINERS.md file creation process"
 if [ -n "$CURRENT_USER" ]; then
@@ -150,6 +151,8 @@ get_default_branch() {
 }
 
 # Function to check if a MAINTAINERS.md file exists in a repo (any location, any case)
+# Returns: 0 if file exists, 1 if not
+# Outputs: file path if found (to stdout)
 file_exists_in_repo() {
     local org="$1"
     local repo="$2"
@@ -171,6 +174,7 @@ file_exists_in_repo() {
     
     for file_path in "${locations[@]}"; do
         if gh api "/repos/$org/$repo/contents/$file_path?ref=$default_branch" &>/dev/null; then
+            echo "$file_path"  # Output the path where file was found
             return 0  # File exists
         fi
     done
@@ -181,6 +185,9 @@ file_exists_in_repo() {
     # If it fails, we'll just rely on the explicit path checks above
     local search_results=$(gh api "/search/code?q=filename:maintainers.md+repo:$org/$repo" --jq '.items[]?.path' 2>/dev/null)
     if [ -n "$search_results" ] && [ "$search_results" != "null" ]; then
+        # Get the first match
+        local first_match=$(echo "$search_results" | head -1)
+        echo "$first_match"
         return 0  # Found a match
     fi
     
@@ -586,8 +593,9 @@ process_repo() {
     fi
     
     if [ "$maintainer_count" -eq 0 ]; then
-        log_warn "No maintainers found for $org/$repo. Will create MAINTAINERS.md with empty list."
+        log_warn "No maintainers found for $org/$repo. Skipping MAINTAINERS.md creation."
         REPOS_NO_MAINTAINERS+=("$org/$repo")
+        return 0
     else
         log_info "  Found $maintainer_count maintainer(s)"
     fi
@@ -597,9 +605,12 @@ process_repo() {
     log_info "Default branch: $default_branch"
     
     # Check if MAINTAINERS.md already exists using API (any location, any case)
-    if file_exists_in_repo "$org" "$repo" "$default_branch"; then
-        log_info "MAINTAINERS.md file already exists (in any location/case). Skipping."
-        REPOS_SKIPPED+=("$org/$repo (MAINTAINERS.md already exists)")
+    local existing_file_path
+    existing_file_path=$(file_exists_in_repo "$org" "$repo" "$default_branch")
+    if [ $? -eq 0 ] && [ -n "$existing_file_path" ]; then
+        log_warn "⚠️  MAINTAINERS.md file already exists at '$existing_file_path' in $org/$repo"
+        log_warn "   Skipping - content not validated. Please manually verify and update if needed."
+        REPOS_FILE_EXISTS+=("$org/$repo (found at: $existing_file_path)")
         return 0
     fi
     
@@ -761,6 +772,16 @@ if [ ${#REPOS_SKIPPED[@]} -gt 0 ]; then
     log_warn "Repositories skipped (${#REPOS_SKIPPED[@]} total):"
     for repo in "${REPOS_SKIPPED[@]}"; do
         echo "  - $repo"
+    done
+fi
+
+# Report repos where MAINTAINERS.md already exists (needs manual validation)
+if [ ${#REPOS_FILE_EXISTS[@]} -gt 0 ]; then
+    echo ""
+    log_warn "⚠️  Repositories with existing MAINTAINERS.md file (${#REPOS_FILE_EXISTS[@]} total):"
+    log_warn "   These files were not validated - please manually check and update if needed:"
+    for repo_info in "${REPOS_FILE_EXISTS[@]}"; do
+        echo "  - $repo_info"
     done
 fi
 

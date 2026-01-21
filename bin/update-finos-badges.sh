@@ -26,7 +26,10 @@ PR_BODY="This PR updates the badge link from \`/stages/\` to \`/project-lifecycl
 
 - Old format: \`https://community.finos.org/docs/governance/software-projects/stages/{stage}/\`
 - New format: \`https://community.finos.org/docs/governance/Software-Projects/project-lifecycle#{stage}\`
-- Note: \`active\` stage has been changed to \`graduated\`"
+- Note: \`active\` stage has been changed to \`graduated\`
+
+> [!IMPORTANT]
+> Please review this PR manually, ensure that there are no other occurrences of the badge logic in other files and merge at your earliest convenience, preferably within the next 2 weeks. Email help@finos.org with any questions or concerns."
 
 # Script-specific configuration
 DRY_RUN=true
@@ -129,11 +132,98 @@ if [ "$DRY_RUN" = true ]; then
     log_warn "DRY RUN MODE - No changes will be made"
 fi
 
+# =============================================================================
+# API ERROR HANDLING HELPERS
+# =============================================================================
+
+# Function to check if API error is a rate limit error
+is_rate_limit_error() {
+    local error_output="$1"
+    echo "$error_output" | grep -qi "rate limit\|429\|x-ratelimit"
+}
+
+# Function to check if API error is a not found error
+is_not_found_error() {
+    local error_output="$1"
+    echo "$error_output" | grep -qi "not found\|404"
+}
+
+# Function to check if API error is an authentication error
+is_auth_error() {
+    local error_output="$1"
+    echo "$error_output" | grep -qi "unauthorized\|401\|forbidden\|403\|bad credentials"
+}
+
+# Function to execute API call with error handling
+# Returns: 0 on success, 1 on failure
+# Sets: API_ERROR_MSG with error details
+api_call_with_error_handling() {
+    local api_endpoint="$1"
+    local org="$2"
+    local repo="$3"
+    local operation="$4"
+    shift 4
+    local api_args=("$@")
+    
+    # Capture both stdout and stderr
+    local api_output
+    local api_error
+    local exit_code
+    
+    # Execute API call and capture output
+    api_output=$(gh api "$api_endpoint" "${api_args[@]}" 2>&1)
+    exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
+        # Success - output the result
+        echo "$api_output"
+        return 0
+    else
+        # Failure - analyze error type
+        api_error="$api_output"
+        
+        if is_rate_limit_error "$api_error"; then
+            log_error "⚠️  RATE LIMIT ERROR for $org/$repo during $operation"
+            log_error "   Error details: $(echo "$api_error" | head -3)"
+            log_warn "   Consider waiting before retrying or using --repo to process fewer repos"
+            API_ERROR_MSG="Rate limit exceeded"
+        elif is_auth_error "$api_error"; then
+            log_error "⚠️  AUTHENTICATION ERROR for $org/$repo during $operation"
+            log_error "   Error details: $(echo "$api_error" | head -3)"
+            API_ERROR_MSG="Authentication failed"
+        elif is_not_found_error "$api_error"; then
+            API_ERROR_MSG="Not found"
+            return 1
+        else
+            log_error "⚠️  API ERROR for $org/$repo during $operation"
+            log_error "   Error details: $(echo "$api_error" | head -5)"
+            API_ERROR_MSG="API call failed: $(echo "$api_error" | head -1)"
+        fi
+        return 1
+    fi
+}
+
 # Function to get default branch name
 get_default_branch() {
     local org="$1"
     local repo="$2"
-    gh api "/repos/$org/$repo" --jq '.default_branch' 2>/dev/null || echo "main"
+    local result
+    local api_error_msg
+    
+    result=$(api_call_with_error_handling "/repos/$org/$repo" "$org" "$repo" "get default branch" --jq '.default_branch' 2>&1)
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ] && [ -n "$result" ] && [ "$result" != "null" ]; then
+        echo "$result"
+        return 0
+    else
+        # On error, default to "main" but log the issue
+        if [ $exit_code -ne 0 ]; then
+            log_warn "Could not determine default branch for $org/$repo, defaulting to 'main'"
+        fi
+        echo "main"
+        return 0
+    fi
 }
 
 # Function to get the SHA of the default branch head
@@ -141,7 +231,18 @@ get_default_branch_sha() {
     local org="$1"
     local repo="$2"
     local default_branch="$3"
-    gh api "/repos/$org/$repo/git/ref/heads/$default_branch" --jq '.object.sha' 2>/dev/null
+    local result
+    
+    result=$(api_call_with_error_handling "/repos/$org/$repo/git/ref/heads/$default_branch" "$org" "$repo" "get branch SHA" --jq '.object.sha' 2>&1)
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ] && [ -n "$result" ] && [ "$result" != "null" ]; then
+        echo "$result"
+        return 0
+    else
+        # Return empty string on error (caller will handle it)
+        return 1
+    fi
 }
 
 # Function to create a branch using GitHub API
@@ -153,11 +254,14 @@ create_branch_via_api() {
     local base_sha="$5"
     
     # Create branch using refs API
-    if gh api -X POST "/repos/$org/$repo/git/refs" \
-        -f ref="refs/heads/$branch_name" \
-        -f sha="$base_sha" &>/dev/null; then
+    local result
+    result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs" "$org" "$repo" "create branch $branch_name" -X POST -f ref="refs/heads/$branch_name" -f sha="$base_sha" 2>&1)
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
         return 0
     else
+        # Error already logged by api_call_with_error_handling
         return 1
     fi
 }
@@ -170,13 +274,16 @@ read_file_via_api() {
     local branch="$4"
     
     # Get file content via API
-    local file_info=$(gh api "/repos/$org/$repo/contents/$file_path?ref=$branch" 2>/dev/null)
-    if [ -z "$file_info" ]; then
+    local file_info
+    file_info=$(api_call_with_error_handling "/repos/$org/$repo/contents/$file_path?ref=$branch" "$org" "$repo" "read file $file_path" 2>&1)
+    local exit_code=$?
+    
+    if [ $exit_code -ne 0 ] || [ -z "$file_info" ]; then
         return 1
     fi
     
     # Decode base64 content
-    echo "$file_info" | jq -r '.content' | base64 -d 2>/dev/null
+    echo "$file_info" | jq -r '.content' 2>/dev/null | base64 -d 2>/dev/null
 }
 
 # Function to update a file using GitHub API (no cloning needed)
@@ -193,17 +300,19 @@ update_file_via_api() {
     local encoded_content=$(echo -n "$content" | base64)
     
     if [ -z "$encoded_content" ]; then
+        log_error "Failed to encode content for $file_path in $org/$repo"
         return 1
     fi
     
     # Update the file using GitHub Contents API
-    if gh api -X PUT "/repos/$org/$repo/contents/$file_path" \
-        -f branch="$branch" \
-        -f message="$commit_message" \
-        -f content="$encoded_content" \
-        -f sha="$file_sha" &>/dev/null; then
+    local result
+    result=$(api_call_with_error_handling "/repos/$org/$repo/contents/$file_path" "$org" "$repo" "update file $file_path" -X PUT -f branch="$branch" -f message="$commit_message" -f content="$encoded_content" -f sha="$file_sha" 2>&1)
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
         return 0
     else
+        # Error already logged by api_call_with_error_handling
         return 1
     fi
 }
@@ -213,9 +322,21 @@ pr_exists() {
     local org="$1"
     local repo="$2"
     local branch="$3"
+    local result
     
     # Check for open PRs with the same branch name
-    gh pr list --repo "$org/$repo" --head "$org:$branch" --state open --json number -q '.[].number' 2>/dev/null | grep -q .
+    result=$(gh pr list --repo "$org/$repo" --head "$org:$branch" --state open --json number -q '.[].number' 2>&1)
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ] && echo "$result" | grep -q .; then
+        return 0
+    else
+        # If it's a real error (not just "no PRs found"), log it
+        if [ $exit_code -ne 0 ] && echo "$result" | grep -qiE "(error|rate limit|unauthorized|forbidden)"; then
+            log_warn "Error checking for existing PR in $org/$repo: $(echo "$result" | head -1)"
+        fi
+        return 1
+    fi
 }
 
 # Function to check if user has maintainer/admin access
@@ -224,14 +345,19 @@ check_repo_access() {
     local repo="$2"
     
     # Try to get repo info - if we can't access it, we don't have permissions
-    local repo_info=$(gh api "/repos/$org/$repo" 2>/dev/null)
-    if [ -z "$repo_info" ]; then
+    local repo_info
+    repo_info=$(api_call_with_error_handling "/repos/$org/$repo" "$org" "$repo" "check repo access" 2>&1)
+    local exit_code=$?
+    
+    if [ $exit_code -ne 0 ] || [ -z "$repo_info" ]; then
+        # Error already logged by api_call_with_error_handling
         return 1
     fi
     
     # Check if we can get the default branch (requires read access at minimum)
     local default_branch=$(echo "$repo_info" | jq -r '.default_branch' 2>/dev/null)
     if [ -z "$default_branch" ] || [ "$default_branch" = "null" ]; then
+        log_warn "Could not determine default branch for $org/$repo (may indicate insufficient access)"
         return 1
     fi
     
@@ -304,16 +430,20 @@ update_badge_urls_via_api() {
     # Check each common file
     for file_path in "${common_files[@]}"; do
         # Try to read file via API
-        local file_info=$(gh api "/repos/$org/$repo/contents/$file_path?ref=$branch" 2>/dev/null)
-        if [ -z "$file_info" ]; then
-            continue  # File doesn't exist
+        local file_info
+        file_info=$(api_call_with_error_handling "/repos/$org/$repo/contents/$file_path?ref=$branch" "$org" "$repo" "read file $file_path" 2>&1)
+        local exit_code=$?
+        
+        if [ $exit_code -ne 0 ] || [ -z "$file_info" ]; then
+            # File doesn't exist or API error (already logged if it's a real error)
+            continue
         fi
         
         # Get file SHA and content
         local file_sha=$(echo "$file_info" | jq -r '.sha' 2>/dev/null)
-        local file_content=$(echo "$file_info" | jq -r '.content' | base64 -d 2>/dev/null)
+        local file_content=$(echo "$file_info" | jq -r '.content' 2>/dev/null | base64 -d 2>/dev/null)
         
-        if [ -z "$file_content" ] || [ "$file_sha" = "null" ]; then
+        if [ -z "$file_content" ] || [ "$file_sha" = "null" ] || [ -z "$file_sha" ]; then
             continue
         fi
         
@@ -469,7 +599,11 @@ process_repo() {
     log_info "Default branch: $default_branch"
     
     # Check if branch already exists on remote
-    if gh api "/repos/$org/$repo/git/ref/heads/$BRANCH_NAME" &>/dev/null; then
+    local branch_check_result
+    branch_check_result=$(api_call_with_error_handling "/repos/$org/$repo/git/ref/heads/$BRANCH_NAME" "$org" "$repo" "check branch existence" 2>&1)
+    local branch_check_exit=$?
+    
+    if [ $branch_check_exit -eq 0 ] && [ -n "$branch_check_result" ]; then
         # Branch exists on remote - check if PR exists
         if pr_exists "$org" "$repo" "$BRANCH_NAME"; then
             log_warn "Branch $BRANCH_NAME already exists on remote with an open PR. Skipping."
@@ -477,8 +611,17 @@ process_repo() {
             return 0
         else
             log_warn "Branch $BRANCH_NAME exists on remote but no open PR found. Deleting remote branch."
-            gh api -X DELETE "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" &>/dev/null || log_warn "Could not delete remote branch"
+            local delete_result
+            delete_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" "$org" "$repo" "delete branch $BRANCH_NAME" -X DELETE 2>&1)
+            if [ $? -eq 0 ]; then
+                log_info "Successfully deleted branch $BRANCH_NAME"
+            else
+                log_warn "Could not delete remote branch $BRANCH_NAME (may have been deleted already or insufficient permissions)"
+            fi
         fi
+    elif [ $branch_check_exit -ne 0 ] && ! is_not_found_error "$branch_check_result"; then
+        # Real API error (not just "branch doesn't exist")
+        log_warn "Error checking branch existence for $org/$repo: $(echo "$branch_check_result" | head -1)"
     fi
     
     if [ "$DRY_RUN" = true ]; then
@@ -498,9 +641,11 @@ process_repo() {
     fi
     
     # Get the SHA of the default branch head
-    local base_sha=$(get_default_branch_sha "$org" "$repo" "$default_branch")
-    if [ -z "$base_sha" ]; then
-        log_error "Failed to get base SHA for $org/$repo"
+    local base_sha
+    base_sha=$(get_default_branch_sha "$org" "$repo" "$default_branch")
+    if [ $? -ne 0 ] || [ -z "$base_sha" ]; then
+        log_error "Failed to get base SHA for $org/$repo (branch: $default_branch)"
+        log_error "   This may indicate the branch doesn't exist, API error, or insufficient permissions"
         REPOS_WITH_ERRORS+=("$org/$repo (failed to get base SHA)")
         return 1
     fi
@@ -537,9 +682,16 @@ Signed-off-by: $current_user_name <$current_user_email>"
             files_updated=$((files_updated + 1))
             log_success "Updated $file_path"
         else
-            log_error "Failed to update $file_path"
+            log_error "Failed to update $file_path in $org/$repo"
             # Clean up the branch if file update fails
-            gh api -X DELETE "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" &>/dev/null
+            log_info "Cleaning up branch $BRANCH_NAME due to file update failure"
+            local delete_result
+            delete_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" "$org" "$repo" "delete branch after file update failure" -X DELETE 2>&1)
+            if [ $? -eq 0 ]; then
+                log_info "Successfully cleaned up branch $BRANCH_NAME"
+            else
+                log_warn "Could not clean up branch $BRANCH_NAME after file update failure"
+            fi
             REPOS_WITH_ERRORS+=("$org/$repo (file update failed: $file_path)")
             return 1
         fi
@@ -548,26 +700,51 @@ Signed-off-by: $current_user_name <$current_user_email>"
     if [ "$files_updated" -eq 0 ]; then
         log_info "No files were updated in $org/$repo. Skipping."
         # Clean up the branch
-        gh api -X DELETE "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" &>/dev/null
+        log_info "Cleaning up branch $BRANCH_NAME (no changes made)"
+        local delete_result
+        delete_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" "$org" "$repo" "delete branch (no changes)" -X DELETE 2>&1)
+        if [ $? -eq 0 ]; then
+            log_info "Successfully cleaned up branch $BRANCH_NAME"
+        else
+            log_warn "Could not clean up branch $BRANCH_NAME (may have been deleted already)"
+        fi
         REPOS_NO_CHANGES+=("$org/$repo")
         return 0
     fi
     
     # Create pull request
     log_info "Creating pull request for $org/$repo"
-    if gh pr create \
+    local pr_result
+    pr_result=$(gh pr create \
         --repo "$org/$repo" \
         --title "$PR_TITLE" \
         --body "$PR_BODY" \
         --head "$BRANCH_NAME" \
-        --base "$default_branch" &>/dev/null; then
+        --base "$default_branch" 2>&1)
+    local pr_exit_code=$?
+    
+    if [ $pr_exit_code -eq 0 ]; then
         log_success "Created PR for $org/$repo"
         PRS_CREATED=$((PRS_CREATED + 1))
     else
         log_error "Failed to create PR for $org/$repo"
+        # Check if it's a rate limit or auth error
+        if echo "$pr_result" | grep -qiE "(rate limit|429)"; then
+            log_error "   Rate limit error detected. Consider waiting before retrying."
+        elif echo "$pr_result" | grep -qiE "(unauthorized|forbidden|401|403)"; then
+            log_error "   Authentication/permission error detected."
+        else
+            log_error "   Error details: $(echo "$pr_result" | head -3)"
+        fi
         # Clean up the branch if PR creation fails
         log_info "Cleaning up branch $BRANCH_NAME due to PR creation failure"
-        gh api -X DELETE "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" &>/dev/null
+        local delete_result
+        delete_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" "$org" "$repo" "delete branch after PR creation failure" -X DELETE 2>&1)
+        if [ $? -eq 0 ]; then
+            log_info "Successfully cleaned up branch $BRANCH_NAME"
+        else
+            log_warn "Could not clean up branch $BRANCH_NAME after PR creation failure"
+        fi
         REPOS_WITH_ERRORS+=("$org/$repo (PR creation failed)")
     fi
         
@@ -664,4 +841,3 @@ fi
 
 echo ""
 log_info "=========================================="
-
