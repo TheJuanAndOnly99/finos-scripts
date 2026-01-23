@@ -20,8 +20,8 @@ configure_finos() {
     STAGE_NEW=("incubating" "graduated" "archived" "graduated")
     
     # Branch and PR settings
-    BRANCH_NAME="update-badge-maturity-link"
-    PR_TITLE="Update badge link to point to the new maturity documentation"
+    BRANCH_NAME="update-badge-stage-link"
+    PR_TITLE="Update badge link to point to the new project lifecycle documentation"
     PR_BODY="This PR updates the badge link from \`/stages/\` to \`/project-lifecycle#\` to reflect the new FINOS documentation structure.
 
 - Old format: \`https://community.finos.org/docs/governance/software-projects/stages/{stage}/\`
@@ -40,8 +40,8 @@ configure_finos_labs() {
     
     # Branch and PR settings
     BRANCH_NAME="update-badge-link"
-    PR_TITLE="Update badge to be clickable link that points to the new maturity documentation"
-    PR_BODY="This PR updates the FINOS badge to be a clickable link pointing to the new maturity documentation.
+    PR_TITLE="Update badge to be clickable link that points to the new project lifecycle documentation"
+    PR_BODY="This PR updates the FINOS badge to be a clickable link pointing to the new project lifecycle documentation.
 
 - Badge is now wrapped in a link to: \`$BADGE_LINK_URL\`
 
@@ -58,9 +58,9 @@ SELECTED_ORG="finos-labs" # finos-labs or finos
 ORGS=()  # Populated from SELECTED_ORG, used for main processing loop
 
 # Script-specific configuration
-DRY_RUN=true
+DRY_RUN=false
 SKIP_EXISTING_PR=true
-TEST_REPO="finos-labs/project-blueprint"
+TEST_REPO="finos-labs/test"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -447,7 +447,7 @@ test_write_permissions() {
     local repo="$2"
     local base_branch="$3"
     local base_sha="$4"
-    local test_branch_name=".test-write-permissions-$(date +%s)"
+    local test_branch_name="test-write-permissions-$(date +%s)"
     
     # Try to create a test branch
     local create_result
@@ -528,12 +528,42 @@ update_badge_urls_in_content_finos_labs() {
     # Pattern to match badge image (literal string, not regex)
     local replacement="[![badge-labs](https://user-images.githubusercontent.com/327285/230928932-7c75f8ed-e57b-41db-9fb7-a292a13a1e58.svg)]($BADGE_LINK_URL)"
     
-    # Check if badge exists in content
-    if echo "$content" | grep -qF "$BADGE_IMAGE"; then
+    # First, check for incorrect FINOS badges (incubating, graduated, archived, active) and replace them
+    # These should not be in finos-labs repos - replace with finos-labs badge
+    # Match patterns like: ![FINOS - Incubating](...), [![FINOS - Incubating](...)](...), badge-incubating.svg, etc.
+    if echo "$content" | grep -qiE "(FINOS.*(Incubating|Graduated|Archived|Active)|badge-(incubating|graduated|archived|active)\.svg)"; then
+        # Replace FINOS badge markdown patterns with finos-labs badge
+        # Process line by line and replace lines containing FINOS badges
+        local new_content=""
+        while IFS= read -r line || [ -n "$line" ]; do
+            if echo "$line" | grep -qiE "(FINOS.*(Incubating|Graduated|Archived|Active)|badge-(incubating|graduated|archived|active)\.svg)"; then
+                # Replace line with finos-labs badge
+                new_content="${new_content}${replacement}"$'\n'
+            else
+                new_content="${new_content}${line}"$'\n'
+            fi
+        done <<< "$updated_content"
+        updated_content="$new_content"
+        file_updated=true
+    fi
+    
+    # Check if correct finos-labs badge exists in content
+    if echo "$updated_content" | grep -qF "$BADGE_IMAGE"; then
         # Check if it's NOT already wrapped in a link (doesn't start with [)
-        if ! echo "$content" | grep -qF "[$BADGE_IMAGE"; then
-            # Replace badge image with clickable link (using sed for in-memory processing)
-            updated_content=$(echo "$updated_content" | sed "s|$BADGE_IMAGE|$replacement|g")
+        if ! echo "$updated_content" | grep -qF "[$BADGE_IMAGE"; then
+            # Replace badge image with clickable link
+            # Process line by line to preserve all content and only replace the badge line
+            local final_content=""
+            while IFS= read -r line || [ -n "$line" ]; do
+                if echo "$line" | grep -qF "$BADGE_IMAGE"; then
+                    # Replace only this line's badge with the linked version
+                    final_content="${final_content}${replacement}"$'\n'
+                else
+                    # Keep all other lines unchanged
+                    final_content="${final_content}${line}"$'\n'
+                fi
+            done <<< "$updated_content"
+            updated_content="$final_content"
             file_updated=true
         fi
     fi
@@ -604,6 +634,10 @@ update_badge_urls_via_api() {
             if echo "$file_content" | grep -qF "230928932-7c75f8ed-e57b-41db-9fb7-a292a13a1e58.svg"; then
                 BADGE_FOUND=true
             fi
+            # Also check for incorrect FINOS badges (they count as having a badge, but wrong one)
+            if echo "$file_content" | grep -qiE "(FINOS.*(Incubating|Graduated|Archived|Active)|badge-(incubating|graduated|archived|active)\.svg)"; then
+                BADGE_FOUND=true
+            fi
         fi
         
         # Check if file needs updating (org-specific checks)
@@ -614,8 +648,12 @@ update_badge_urls_via_api() {
                 needs_update=true
             fi
         elif [ "$SELECTED_ORG" = "finos-labs" ]; then
-            # Check if badge exists but not wrapped in link
+            # Check if correct badge exists but not wrapped in link
             if echo "$file_content" | grep -qF "$BADGE_IMAGE" && ! echo "$file_content" | grep -qF "[$BADGE_IMAGE"; then
+                needs_update=true
+            fi
+            # Check for incorrect FINOS badges that need to be replaced
+            if echo "$file_content" | grep -qiE "(FINOS.*(Incubating|Graduated|Archived|Active)|badge-(incubating|graduated|archived|active)\.svg)"; then
                 needs_update=true
             fi
         fi
@@ -671,12 +709,15 @@ process_repo() {
     log_info "Default branch: $default_branch"
     
     # Check if branch already exists on remote
+    # Call API directly to avoid error logging for "not found" cases
     local branch_check_result
-    branch_check_result=$(api_call_with_error_handling "/repos/$org/$repo/git/ref/heads/$BRANCH_NAME" "$org" "$repo" "check branch existence" 2>&1)
+    branch_check_result=$(gh api "/repos/$org/$repo/git/ref/heads/$BRANCH_NAME" 2>&1)
     local branch_check_exit=$?
     
     if [ $branch_check_exit -eq 0 ] && [ -n "$branch_check_result" ]; then
-        # Branch exists on remote - check if PR exists
+        # Branch exists on remote
+        log_info "Branch $BRANCH_NAME found on remote for $org/$repo"
+        # Check if PR exists
         if pr_exists "$org" "$repo" "$BRANCH_NAME"; then
             log_warn "Branch $BRANCH_NAME already exists on remote with an open PR. Skipping."
             REPOS_SKIPPED+=("$org/$repo (PR already exists)")
@@ -691,7 +732,10 @@ process_repo() {
                 log_warn "Could not delete remote branch $BRANCH_NAME (may have been deleted already or insufficient permissions)"
             fi
         fi
-    elif [ $branch_check_exit -ne 0 ] && ! is_not_found_error "$branch_check_result"; then
+    elif [ $branch_check_exit -ne 0 ] && is_not_found_error "$branch_check_result"; then
+        # Branch doesn't exist (this is normal)
+        log_info "Branch $BRANCH_NAME not found on remote for $org/$repo"
+    elif [ $branch_check_exit -ne 0 ]; then
         # Real API error (not just "branch doesn't exist")
         log_warn "Error checking branch existence for $org/$repo: $(echo "$branch_check_result" | head -1)"
     fi
@@ -731,26 +775,50 @@ process_repo() {
     if [ "$DRY_RUN" = true ]; then
         log_info "[DRY RUN] Testing write permissions (creating and deleting test branch)..."
         if ! test_write_permissions "$org" "$repo" "$default_branch" "$base_sha"; then
-            log_error "[DRY RUN] Write permission test failed - cannot create branches"
-            log_error "   This indicates insufficient permissions or branch protection rules"
-            REPOS_WITH_ERRORS+=("$org/$repo (write permission test failed)")
+            log_warn "[DRY RUN] Write permission test failed - cannot create branches"
+            log_warn "   This may indicate branch protection rules or API limitations"
+            log_warn "   Continuing in DRY RUN mode to show what changes would be made"
+            # Don't fail in DRY_RUN mode - just warn and continue
+        else
+            log_success "[DRY RUN] Write permissions verified - can create branches"
+        fi
+        log_info "[DRY RUN] Proceeding to show what changes would be made"
+        log_info "[DRY RUN] Would create branch: $BRANCH_NAME from $default_branch"
+    else
+        # Create new branch using API (only in non-dry-run mode)
+        log_info "Creating branch $BRANCH_NAME from $default_branch"
+        if ! create_branch_via_api "$org" "$repo" "$BRANCH_NAME" "$default_branch" "$base_sha"; then
+            log_error "Failed to create branch $BRANCH_NAME for $org/$repo"
+            REPOS_WITH_ERRORS+=("$org/$repo (branch creation failed)")
             return 1
         fi
-        log_success "[DRY RUN] Write permissions verified - can create branches"
-        log_info "[DRY RUN] Proceeding to create branch and files for PR testing"
-    fi
-    
-    # Create new branch using API
-    log_info "Creating branch $BRANCH_NAME from $default_branch"
-    if ! create_branch_via_api "$org" "$repo" "$BRANCH_NAME" "$default_branch" "$base_sha"; then
-        log_error "Failed to create branch $BRANCH_NAME for $org/$repo"
-        REPOS_WITH_ERRORS+=("$org/$repo (branch creation failed)")
-        return 1
     fi
     
     # Get current user for DCO sign-off
-    local current_user_name=$(gh api user --jq '.name // .login' 2>/dev/null || echo "")
-    local current_user_email=$(gh api user --jq '.email // ""' 2>/dev/null || echo "")
+    # Try to get email from git config first (most reliable for DCO)
+    local current_user_email=$(git config user.email 2>/dev/null || echo "")
+    local current_user_name=$(git config user.name 2>/dev/null || echo "")
+    
+    # If not in git config, try GitHub API
+    if [ -z "$current_user_email" ] || [ -z "$current_user_name" ]; then
+        local current_user_login=$(gh api user --jq '.login' 2>/dev/null || echo "")
+        if [ -z "$current_user_name" ]; then
+            current_user_name=$(gh api user --jq '.name // .login' 2>/dev/null || echo "$current_user_login")
+        fi
+        if [ -z "$current_user_email" ]; then
+            # Try to get email from GitHub API
+            current_user_email=$(gh api user --jq '.email // ""' 2>/dev/null || echo "")
+            # If still not available, use GitHub ID-based noreply email (more reliable)
+            if [ -z "$current_user_email" ] && [ -n "$current_user_login" ]; then
+                local user_id=$(gh api user --jq '.id // ""' 2>/dev/null || echo "")
+                if [ -n "$user_id" ]; then
+                    current_user_email="${user_id}+${current_user_login}@users.noreply.github.com"
+                else
+                    current_user_email="${current_user_login}@users.noreply.github.com"
+                fi
+            fi
+        fi
+    fi
     
     # Update each file via API
     local files_updated=0
@@ -767,42 +835,57 @@ process_repo() {
             commit_msg="Update badge to be clickable link in $file_path"
         fi
         
+        # Always add DCO sign-off if we have user info
         if [ -n "$current_user_name" ] && [ -n "$current_user_email" ]; then
             commit_msg="$commit_msg
 
 Signed-off-by: $current_user_name <$current_user_email>"
+            log_info "DCO sign-off: $current_user_name <$current_user_email>"
+        else
+            log_warn "DCO sign-off not added: name='$current_user_name' email='$current_user_email'"
         fi
         
         log_info "Updating file: $file_path"
-        if update_file_via_api "$org" "$repo" "$BRANCH_NAME" "$file_path" "$file_content" "$commit_msg" "$file_sha"; then
+        if [ "$DRY_RUN" = true ]; then
+            log_info "[DRY RUN] Would update $file_path with badge changes"
+            log_info "[DRY RUN] Commit message: $commit_msg"
             files_updated=$((files_updated + 1))
-            log_success "Updated $file_path"
+            log_success "[DRY RUN] Would update $file_path"
         else
-            log_error "Failed to update $file_path in $org/$repo"
-            # Clean up the branch if file update fails
-            log_info "Cleaning up branch $BRANCH_NAME due to file update failure"
-            local delete_result
-            delete_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" "$org" "$repo" "delete branch after file update failure" -X DELETE 2>&1)
-            if [ $? -eq 0 ]; then
-                log_info "Successfully cleaned up branch $BRANCH_NAME"
+            if update_file_via_api "$org" "$repo" "$BRANCH_NAME" "$file_path" "$file_content" "$commit_msg" "$file_sha"; then
+                files_updated=$((files_updated + 1))
+                log_success "Updated $file_path"
             else
-                log_warn "Could not clean up branch $BRANCH_NAME after file update failure"
+                log_error "Failed to update $file_path in $org/$repo"
+                # Clean up the branch if file update fails
+                log_info "Cleaning up branch $BRANCH_NAME due to file update failure"
+                local delete_result
+                delete_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" "$org" "$repo" "delete branch after file update failure" -X DELETE 2>&1)
+                if [ $? -eq 0 ]; then
+                    log_info "Successfully cleaned up branch $BRANCH_NAME"
+                else
+                    log_warn "Could not clean up branch $BRANCH_NAME after file update failure"
+                fi
+                REPOS_WITH_ERRORS+=("$org/$repo (file update failed: $file_path)")
+                return 1
             fi
-            REPOS_WITH_ERRORS+=("$org/$repo (file update failed: $file_path)")
-            return 1
         fi
     done <<< "$files_to_update"
     
     if [ "$files_updated" -eq 0 ]; then
         log_info "No files were updated in $org/$repo. Skipping."
-        # Clean up the branch
-        log_info "Cleaning up branch $BRANCH_NAME (no changes made)"
-        local delete_result
-        delete_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" "$org" "$repo" "delete branch (no changes)" -X DELETE 2>&1)
-        if [ $? -eq 0 ]; then
-            log_info "Successfully cleaned up branch $BRANCH_NAME"
+        # Clean up the branch (only if it was actually created)
+        if [ "$DRY_RUN" != true ]; then
+            log_info "Cleaning up branch $BRANCH_NAME (no changes made)"
+            local delete_result
+            delete_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" "$org" "$repo" "delete branch (no changes)" -X DELETE 2>&1)
+            if [ $? -eq 0 ]; then
+                log_info "Successfully cleaned up branch $BRANCH_NAME"
+            else
+                log_warn "Could not clean up branch $BRANCH_NAME (may have been deleted already)"
+            fi
         else
-            log_warn "Could not clean up branch $BRANCH_NAME (may have been deleted already)"
+            log_info "[DRY RUN] Would skip creating PR (no files to update)"
         fi
         REPOS_NO_CHANGES+=("$org/$repo")
         return 0
@@ -966,7 +1049,7 @@ if [ ${#REPOS_WITH_CHANGES[@]} -gt 0 ]; then
     echo ""
     log_success "Repositories with changes applied (${#REPOS_WITH_CHANGES[@]} total):"
     for repo in "${REPOS_WITH_CHANGES[@]}"; do
-        echo "  ✓ $repo"
+        log_success "  ✓ $repo"
     done
 fi
 
@@ -975,7 +1058,7 @@ if [ ${#REPOS_NO_CHANGES[@]} -gt 0 ]; then
     echo ""
     log_info "Repositories with no changes needed (${#REPOS_NO_CHANGES[@]} total):"
     for repo in "${REPOS_NO_CHANGES[@]}"; do
-        echo "  - $repo"
+        log_info "  - $repo"
     done
 fi
 
@@ -984,7 +1067,7 @@ if [ ${#REPOS_WITHOUT_BADGE[@]} -gt 0 ]; then
     echo ""
     log_warn "Repositories without badges (${#REPOS_WITHOUT_BADGE[@]} total):"
     for repo in "${REPOS_WITHOUT_BADGE[@]}"; do
-        echo "  ⚠ $repo"
+        log_warn "  ⚠ $repo"
     done
 fi
 
@@ -993,7 +1076,7 @@ if [ ${#REPOS_SKIPPED[@]} -gt 0 ]; then
     echo ""
     log_warn "Repositories skipped (${#REPOS_SKIPPED[@]} total):"
     for repo in "${REPOS_SKIPPED[@]}"; do
-        echo "  - $repo"
+        log_warn "  - $repo"
     done
 fi
 
@@ -1002,7 +1085,7 @@ if [ ${#REPOS_WITH_ERRORS[@]} -gt 0 ]; then
     echo ""
     log_error "Repositories with errors (${#REPOS_WITH_ERRORS[@]} total):"
     for repo in "${REPOS_WITH_ERRORS[@]}"; do
-        echo "  ✗ $repo"
+        log_error "  ✗ $repo"
     done
 fi
 
@@ -1011,7 +1094,7 @@ if [ ${#INSUFFICIENT_ACCESS_REPOS[@]} -gt 0 ]; then
     echo ""
     log_warn "Repositories with insufficient access (${#INSUFFICIENT_ACCESS_REPOS[@]} total):"
     for repo in "${INSUFFICIENT_ACCESS_REPOS[@]}"; do
-        echo "  ✗ $repo"
+        log_warn "  ✗ $repo"
     done
 fi
 
