@@ -1,28 +1,28 @@
 #!/bin/bash
 
-# This script is used to update the badges in the finos organization
+# This script is used to update badges in FINOS organizations
+# Supports both 'finos' and 'finos-labs' organizations with org-specific configurations
 
-# Organizations to process
-ORGS=("finos")
+# =============================================================================
+# ORG-SPECIFIC CONFIGURATIONS
+# =============================================================================
 
-# Badge URL replacement (for finos org badges)
-# Base URL
-BASE_URL="https://community.finos.org/docs/governance/Software-Projects"
-# Handle both case variations: software-projects and Software-Projects
-OLD_BASE_PATTERN_LOWER="https://community.finos.org/docs/governance/software-projects/stages/"
-OLD_BASE_PATTERN_UPPER="https://community.finos.org/docs/governance/Software-Projects/stages/"
-NEW_BASE_PATTERN="$BASE_URL/project-lifecycle#"
-
-# Stage mappings: old-stage -> new-stage
-# active becomes graduated
-# Using arrays instead of associative arrays for compatibility
-STAGE_OLD=("incubating" "graduated" "archived" "active")
-STAGE_NEW=("incubating" "graduated" "archived" "graduated")
-
-# Branch and PR settings
-BRANCH_NAME="update-badge-maturity-link"
-PR_TITLE="Update badge link to point to the new maturity documentation"
-PR_BODY="This PR updates the badge link from \`/stages/\` to \`/project-lifecycle#\` to reflect the new FINOS documentation structure.
+# Configuration for 'finos' organization
+configure_finos() {
+    # Badge URL replacement (for finos org badges)
+    BASE_URL="https://community.finos.org/docs/governance/Software-Projects"
+    OLD_BASE_PATTERN_LOWER="https://community.finos.org/docs/governance/software-projects/stages/"
+    OLD_BASE_PATTERN_UPPER="https://community.finos.org/docs/governance/Software-Projects/stages/"
+    NEW_BASE_PATTERN="$BASE_URL/project-lifecycle#"
+    
+    # Stage mappings: old-stage -> new-stage
+    STAGE_OLD=("incubating" "graduated" "archived" "active")
+    STAGE_NEW=("incubating" "graduated" "archived" "graduated")
+    
+    # Branch and PR settings
+    BRANCH_NAME="update-badge-maturity-link"
+    PR_TITLE="Update badge link to point to the new maturity documentation"
+    PR_BODY="This PR updates the badge link from \`/stages/\` to \`/project-lifecycle#\` to reflect the new FINOS documentation structure.
 
 - Old format: \`https://community.finos.org/docs/governance/software-projects/stages/{stage}/\`
 - New format: \`https://community.finos.org/docs/governance/Software-Projects/project-lifecycle#{stage}\`
@@ -30,11 +30,37 @@ PR_BODY="This PR updates the badge link from \`/stages/\` to \`/project-lifecycl
 
 > [!IMPORTANT]
 > Please review this PR manually, ensure that there are no other occurrences of the badge logic in other files and merge at your earliest convenience, preferably within the next 2 weeks. Email help@finos.org with any questions or concerns."
+}
+
+# Configuration for 'finos-labs' organization
+configure_finos_labs() {
+    # Badge image pattern (finos-labs badge)
+    BADGE_IMAGE='![badge-labs](https://user-images.githubusercontent.com/327285/230928932-7c75f8ed-e57b-41db-9fb7-a292a13a1e58.svg)'
+    BADGE_LINK_URL="https://community.finos.org/docs/governance/software-projects/project-lifecycle/#labs"
+    
+    # Branch and PR settings
+    BRANCH_NAME="update-badge-link"
+    PR_TITLE="Update badge to be clickable link that points to the new maturity documentation"
+    PR_BODY="This PR updates the FINOS badge to be a clickable link pointing to the new maturity documentation.
+
+- Badge is now wrapped in a link to: \`$BADGE_LINK_URL\`
+
+> [!IMPORTANT]
+> Please review this PR manually, ensure that there are no other occurrences of the badge logic in other files and merge at your earliest convenience, preferably within the next 2 weeks. Email help@finos.org with any questions or concerns."
+}
+
+# =============================================================================
+# SCRIPT CONFIGURATION
+# =============================================================================
+
+# Organization to process (set via --org or extracted from --repo)
+SELECTED_ORG="finos-labs" # finos-labs or finos
+ORGS=()  # Populated from SELECTED_ORG, used for main processing loop
 
 # Script-specific configuration
 DRY_RUN=true
 SKIP_EXISTING_PR=true
-TEST_REPO="finos/software-project-blueprint"
+TEST_REPO="finos-labs/project-blueprint"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -47,6 +73,10 @@ while [[ $# -gt 0 ]]; do
             TEST_REPO="$2"
             shift 2
             ;;
+        --org)
+            SELECTED_ORG="$2"
+            shift 2
+            ;;
         --no-skip-existing-pr)
             SKIP_EXISTING_PR=false
             shift
@@ -56,15 +86,20 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -d, --dry-run              Show what would be done without making changes"
             echo "  -r, --repo REPO            Test on a single repository (format: org/repo-name)"
+            echo "  --org ORG                  Specify organization: 'finos' or 'finos-labs' (required if not using --repo)"
             echo "  --no-skip-existing-pr      Don't skip repos that already have an open PR"
             echo "  -h, --help                 Show this help message"
             echo ""
-            echo "This script creates PRs to update badge links in all finos repos:"
-            echo "  Old: $OLD_URL_PATTERN"
-            echo "  New: $NEW_URL_PATTERN"
+            echo "This script updates badges in FINOS organizations:"
+            echo "  - finos: Updates badge URLs from /stages/ to /project-lifecycle#"
+            echo "  - finos-labs: Makes badges clickable links"
             echo ""
             echo "Example for testing on a single repo:"
             echo "  $0 --repo finos/repo-name"
+            echo ""
+            echo "Example for processing an organization:"
+            echo "  $0 --org finos"
+            echo "  $0 --org finos-labs"
             exit 0
             ;;
         *)
@@ -103,6 +138,34 @@ fi
 # Check GitHub auth
 check_github_auth
 
+# Determine organization configuration
+if [ -n "$TEST_REPO" ]; then
+    # Extract org from test repo
+    SELECTED_ORG="${TEST_REPO%%/*}"
+fi
+
+if [ -z "$SELECTED_ORG" ]; then
+    log_error "Organization not specified. Use --org to specify 'finos' or 'finos-labs', or use --repo to test on a single repository."
+    exit 1
+fi
+
+# Configure based on selected organization
+case "$SELECTED_ORG" in
+    finos)
+        configure_finos
+        ORGS=("finos")
+        ;;
+    finos-labs)
+        configure_finos_labs
+        ORGS=("finos-labs")
+        ;;
+    *)
+        log_error "Unsupported organization: $SELECTED_ORG"
+        log_error "Supported organizations: finos, finos-labs"
+        exit 1
+        ;;
+esac
+
 # Get current user
 CURRENT_USER=$(gh api user --jq '.login' 2>/dev/null || echo "")
 
@@ -111,11 +174,14 @@ INSUFFICIENT_ACCESS_REPOS=()
 
 # Track PR creation stats
 PRS_CREATED=0
+REPOS_WITH_CHANGES=()
 REPOS_SKIPPED=()
 REPOS_NO_CHANGES=()
+REPOS_WITHOUT_BADGE=()
 REPOS_WITH_ERRORS=()
 
 log_info "Starting badge link update process"
+log_info "Organization: $SELECTED_ORG"
 if [ -n "$CURRENT_USER" ]; then
     log_info "Current user: $CURRENT_USER"
 fi
@@ -124,10 +190,15 @@ if [ -n "$TEST_REPO" ]; then
 else
     log_info "Organizations: ${ORGS[*]}"
 fi
-log_info "Old URL base (lowercase): $OLD_BASE_PATTERN_LOWER"
-log_info "Old URL base (uppercase): $OLD_BASE_PATTERN_UPPER"
-log_info "New URL base: $NEW_BASE_PATTERN"
-log_info "Stage mappings: ${STAGE_OLD[*]} → ${STAGE_NEW[*]}"
+if [ "$SELECTED_ORG" = "finos" ]; then
+    log_info "Old URL base (lowercase): $OLD_BASE_PATTERN_LOWER"
+    log_info "Old URL base (uppercase): $OLD_BASE_PATTERN_UPPER"
+    log_info "New URL base: $NEW_BASE_PATTERN"
+    log_info "Stage mappings: ${STAGE_OLD[*]} → ${STAGE_NEW[*]}"
+elif [ "$SELECTED_ORG" = "finos-labs" ]; then
+    log_info "Badge image: $BADGE_IMAGE"
+    log_info "Badge link URL: $BADGE_LINK_URL"
+fi
 if [ "$DRY_RUN" = true ]; then
     log_warn "DRY RUN MODE - No changes will be made"
 fi
@@ -202,6 +273,10 @@ api_call_with_error_handling() {
         return 1
     fi
 }
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
 
 # Function to get default branch name
 get_default_branch() {
@@ -364,8 +439,37 @@ check_repo_access() {
     return 0
 }
 
-# Function to update badge URLs in file content (in memory)
-update_badge_urls_in_content() {
+# Function to test write permissions by creating and deleting a test branch
+# This verifies we can actually push/create branches (not just read)
+# Critical for DRY_RUN validation - tests actual push capability
+test_write_permissions() {
+    local org="$1"
+    local repo="$2"
+    local base_branch="$3"
+    local base_sha="$4"
+    local test_branch_name=".test-write-permissions-$(date +%s)"
+    
+    # Try to create a test branch
+    local create_result
+    create_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs" "$org" "$repo" "test write permissions" -X POST -f ref="refs/heads/$test_branch_name" -f sha="$base_sha" 2>&1)
+    local create_exit=$?
+    
+    if [ $create_exit -ne 0 ]; then
+        return 1  # Failed to create branch - no write permissions
+    fi
+    
+    # Immediately delete the test branch to clean up
+    api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$test_branch_name" "$org" "$repo" "cleanup test branch" -X DELETE &>/dev/null
+    
+    return 0  # Successfully created and deleted - we have write permissions
+}
+
+# =============================================================================
+# ORG-SPECIFIC BADGE TRANSFORMATION FUNCTIONS
+# =============================================================================
+
+# Function to update badge URLs in file content for 'finos' org
+update_badge_urls_in_content_finos() {
     local content="$1"
     local file_name="$2"
     local updated_content="$content"
@@ -373,9 +477,6 @@ update_badge_urls_in_content() {
     
     # Special case: Handle active badge image and text replacement
     if echo "$content" | grep -qF "badge-active.svg"; then
-        local old_active_badge='\[!\[FINOS - Active\]\(https://cdn\.jsdelivr\.net/gh/finos/contrib-toolbox@master/images/badge-active\.svg\)\]\(https://community\.finos\.org/docs/governance/Software-Projects/stages/active\)'
-        local new_graduated_badge='[![FINOS - Graduated](https://cdn.jsdelivr.net/gh/finos/contrib-toolbox@master/images/badge-graduated.svg)](https://community.finos.org/docs/governance/Software-Projects/project-lifecycle#graduated)'
-        
         # Replace using sed (works in memory)
         updated_content=$(echo "$updated_content" | sed -e 's|badge-active\.svg|badge-graduated.svg|g' -e 's|FINOS - Active|FINOS - Graduated|g' -e 's|/stages/active|/project-lifecycle#graduated|g')
         file_updated=true
@@ -417,12 +518,57 @@ update_badge_urls_in_content() {
     fi
 }
 
+# Function to update badge URLs in file content for 'finos-labs' org
+update_badge_urls_in_content_finos_labs() {
+    local content="$1"
+    local file_name="$2"
+    local updated_content="$content"
+    local file_updated=false
+    
+    # Pattern to match badge image (literal string, not regex)
+    local replacement="[![badge-labs](https://user-images.githubusercontent.com/327285/230928932-7c75f8ed-e57b-41db-9fb7-a292a13a1e58.svg)]($BADGE_LINK_URL)"
+    
+    # Check if badge exists in content
+    if echo "$content" | grep -qF "$BADGE_IMAGE"; then
+        # Check if it's NOT already wrapped in a link (doesn't start with [)
+        if ! echo "$content" | grep -qF "[$BADGE_IMAGE"; then
+            # Replace badge image with clickable link (using sed for in-memory processing)
+            updated_content=$(echo "$updated_content" | sed "s|$BADGE_IMAGE|$replacement|g")
+            file_updated=true
+        fi
+    fi
+    
+    if [ "$file_updated" = true ]; then
+        echo "$updated_content"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Unified function to update badge URLs (routes to org-specific handler)
+update_badge_urls_in_content() {
+    local content="$1"
+    local file_name="$2"
+    
+    if [ "$SELECTED_ORG" = "finos" ]; then
+        update_badge_urls_in_content_finos "$content" "$file_name"
+    elif [ "$SELECTED_ORG" = "finos-labs" ]; then
+        update_badge_urls_in_content_finos_labs "$content" "$file_name"
+    else
+        log_error "Unknown organization: $SELECTED_ORG"
+        return 1
+    fi
+}
+
 # Function to find and replace badge URLs in files (API-based version)
+# Also tracks whether a badge was found (sets BADGE_FOUND variable)
 update_badge_urls_via_api() {
     local org="$1"
     local repo="$2"
     local branch="$3"
     local files_to_update=()  # Array of file paths that need updating
+    BADGE_FOUND=false  # Global variable to track if badge exists
     
     # Common files to check
     local common_files=("README.md" "readme.md" "Readme.md" "README.rst" "README.txt")
@@ -447,8 +593,34 @@ update_badge_urls_via_api() {
             continue
         fi
         
-        # Check if file needs updating
-        if echo "$file_content" | grep -qiF "software-projects/stages/" || echo "$file_content" | grep -qF "badge-active.svg"; then
+        # Check if badge exists (for tracking purposes)
+        if [ "$SELECTED_ORG" = "finos" ]; then
+            # Check for finos badge patterns
+            if echo "$file_content" | grep -qiE "(badge-(incubating|graduated|archived|active)|software-projects/stages/|project-lifecycle#)"; then
+                BADGE_FOUND=true
+            fi
+        elif [ "$SELECTED_ORG" = "finos-labs" ]; then
+            # Check for finos-labs badge pattern (check for badge image URL)
+            if echo "$file_content" | grep -qF "230928932-7c75f8ed-e57b-41db-9fb7-a292a13a1e58.svg"; then
+                BADGE_FOUND=true
+            fi
+        fi
+        
+        # Check if file needs updating (org-specific checks)
+        local needs_update=false
+        if [ "$SELECTED_ORG" = "finos" ]; then
+            # Check for old URL pattern or active badge
+            if echo "$file_content" | grep -qiF "software-projects/stages/" || echo "$file_content" | grep -qF "badge-active.svg"; then
+                needs_update=true
+            fi
+        elif [ "$SELECTED_ORG" = "finos-labs" ]; then
+            # Check if badge exists but not wrapped in link
+            if echo "$file_content" | grep -qF "$BADGE_IMAGE" && ! echo "$file_content" | grep -qF "[$BADGE_IMAGE"; then
+                needs_update=true
+            fi
+        fi
+        
+        if [ "$needs_update" = true ]; then
             # Update content in memory
             local updated_content=$(update_badge_urls_in_content "$file_content" "$file_path")
             local update_exit_code=$?
@@ -459,115 +631,15 @@ update_badge_urls_via_api() {
         fi
     done
     
+    # Output badge status first (for parent shell to capture), then files
+    echo "BADGE_FOUND:$BADGE_FOUND"
     # Return files that need updating (format: path|sha|content)
     printf '%s\n' "${files_to_update[@]}"
 }
 
-# Function to find and replace badge URLs in files (original clone-based version)
-update_badge_urls() {
-    local repo_dir="$1"
-    local files_changed=0
-    
-    # Function to check and update a file
-    update_file() {
-        local file_path="$1"
-        local file_name="$2"
-        local file_updated=false
-        
-        # Special case: Handle active badge image and text replacement
-        # Pattern: [![FINOS - Active](badge-active.svg)](url)
-        # Replace with: [![FINOS - Graduated](badge-graduated.svg)](new-url)
-        if grep -qF "badge-active.svg" "$file_path" 2>/dev/null; then
-            local old_active_badge='\[!\[FINOS - Active\]\(https://cdn\.jsdelivr\.net/gh/finos/contrib-toolbox@master/images/badge-active\.svg\)\]\(https://community\.finos\.org/docs/governance/Software-Projects/stages/active\)'
-            local new_graduated_badge='[![FINOS - Graduated](https://cdn.jsdelivr.net/gh/finos/contrib-toolbox@master/images/badge-graduated.svg)](https://community.finos.org/docs/governance/Software-Projects/project-lifecycle#graduated)'
-            
-            # Try to replace the full badge pattern
-            perl -i.bak -pe "s|\[!\[FINOS - Active\]\(https://cdn\.jsdelivr\.net/gh/finos/contrib-toolbox@master/images/badge-active\.svg\)\]\(https://community\.finos\.org/docs/governance/Software-Projects/stages/active\)|$new_graduated_badge|g" "$file_path" 2>/dev/null || {
-                # Fallback: replace parts separately
-                perl -i.bak -pe "s|badge-active\.svg|badge-graduated.svg|g; s|FINOS - Active|FINOS - Graduated|g; s|/stages/active|/project-lifecycle#graduated|g" "$file_path" 2>/dev/null || {
-                    # Final fallback with sed
-                    sed -i.bak -e 's|badge-active\.svg|badge-graduated.svg|g' -e 's|FINOS - Active|FINOS - Graduated|g' -e 's|/stages/active|/project-lifecycle#graduated|g' "$file_path"
-                }
-            }
-            file_updated=true
-            log_info "Updated active badge → graduated badge in file: $file_name" >&2
-        fi
-        
-        # Check if old URL pattern exists in file (handle both case variations)
-        local found_pattern=false
-        if grep -qiF "software-projects/stages/" "$file_path" 2>/dev/null; then
-            found_pattern=true
-        fi
-        
-        if [ "$found_pattern" = true ]; then
-            # Process each stage mapping
-            local i=0
-            while [ $i -lt ${#STAGE_OLD[@]} ]; do
-                local old_stage="${STAGE_OLD[$i]}"
-                local new_stage="${STAGE_NEW[$i]}"
-                
-                # Skip active stage here since we handled it above
-                if [ "$old_stage" = "active" ]; then
-                    i=$((i + 1))
-                    continue
-                fi
-                
-                # Check for both case variations of the URL
-                local old_url_lower="${OLD_BASE_PATTERN_LOWER}${old_stage}"
-                local old_url_upper="${OLD_BASE_PATTERN_UPPER}${old_stage}"
-                local new_url="${NEW_BASE_PATTERN}${new_stage}"
-                
-                # Check if this specific stage URL exists in the file (case-insensitive)
-                if grep -qiF "/stages/${old_stage}" "$file_path" 2>/dev/null; then
-                    # Replace both case variations
-                    perl -i.bak -pe "s|\Q$old_url_lower\E|$new_url|gi; s|\Q$old_url_upper\E|$new_url|gi" "$file_path" 2>/dev/null || {
-                        # Fallback to sed if perl not available
-                        local escaped_lower=$(printf '%s\n' "$old_url_lower" | sed 's/[[\.*^$()+?{|]/\\&/g')
-                        local escaped_upper=$(printf '%s\n' "$old_url_upper" | sed 's/[[\.*^$()+?{|]/\\&/g')
-                        local escaped_new=$(printf '%s\n' "$new_url" | sed 's/[\/&]/\\&/g')
-                        sed -i.bak -e "s|$escaped_lower|$escaped_new|gI" -e "s|$escaped_upper|$escaped_new|gI" "$file_path"
-                    }
-                    file_updated=true
-                    log_info "Updated $old_stage → $new_stage in file: $file_name" >&2
-                fi
-                i=$((i + 1))
-            done
-            
-            if [ "$file_updated" = true ]; then
-                rm -f "$file_path.bak"
-                files_changed=$((files_changed + 1))
-                return 0
-            fi
-        fi
-        return 1
-    }
-    
-    # First, check README.md in the root (most common location)
-    if [ -f "$repo_dir/README.md" ]; then
-        update_file "$repo_dir/README.md" "README.md"
-    fi
-    
-    # Also check README.md (case variations) and other common locations
-    for readme_file in "readme.md" "Readme.md" "README.rst" "README.txt"; do
-        if [ -f "$repo_dir/$readme_file" ]; then
-            update_file "$repo_dir/$readme_file" "$readme_file"
-        fi
-    done
-    
-    # If no changes found in README files, do a broader search as fallback
-    if [ "$files_changed" -eq 0 ]; then
-        log_info "Badge URL not found in README files, searching all files..." >&2
-        while IFS= read -r file; do
-            if [ -f "$file" ]; then
-                local rel_path="${file#$repo_dir/}"
-                update_file "$file" "$rel_path"
-            fi
-        done < <(grep -ri -l "software-projects/stages/" "$repo_dir" --exclude-dir=.git 2>/dev/null || true)
-    fi
-    
-    # Return only the number (log messages go to stderr)
-    echo "$files_changed"
-}
+# =============================================================================
+# MAIN PROCESSING FUNCTION
+# =============================================================================
 
 # Function to process a single repository
 process_repo() {
@@ -624,19 +696,23 @@ process_repo() {
         log_warn "Error checking branch existence for $org/$repo: $(echo "$branch_check_result" | head -1)"
     fi
     
-    if [ "$DRY_RUN" = true ]; then
-        log_info "[DRY RUN] Would check for badge URLs in $org/$repo via API"
-        return 0
-    fi
-    
     # Try API-based approach first (check common files)
     log_info "Checking for badge URLs via API..."
-    local files_to_update=$(update_badge_urls_via_api "$org" "$repo" "$default_branch")
+    local update_output=$(update_badge_urls_via_api "$org" "$repo" "$default_branch")
+    # Parse badge status from first line
+    local badge_status=$(echo "$update_output" | head -1 | sed 's/^BADGE_FOUND://')
+    # Get files to update (skip first line)
+    local files_to_update=$(echo "$update_output" | tail -n +2)
     local file_count=$(echo "$files_to_update" | grep -v '^$' | wc -l | tr -d ' ')
     
     if [ "$file_count" -eq 0 ]; then
-        log_info "No badge URLs found in common files for $org/$repo. Skipping."
-        REPOS_NO_CHANGES+=("$org/$repo")
+        if [ "$badge_status" = "true" ]; then
+            log_info "Badge found but no updates needed for $org/$repo. Skipping."
+            REPOS_NO_CHANGES+=("$org/$repo")
+        else
+            log_warn "No badge found in $org/$repo. Skipping."
+            REPOS_WITHOUT_BADGE+=("$org/$repo")
+        fi
         return 0
     fi
     
@@ -648,6 +724,20 @@ process_repo() {
         log_error "   This may indicate the branch doesn't exist, API error, or insufficient permissions"
         REPOS_WITH_ERRORS+=("$org/$repo (failed to get base SHA)")
         return 1
+    fi
+    log_info "Base SHA validated: ${base_sha:0:7}... (permissions OK)"
+    
+    # Test write permissions before proceeding (critical for DRY_RUN validation)
+    if [ "$DRY_RUN" = true ]; then
+        log_info "[DRY RUN] Testing write permissions (creating and deleting test branch)..."
+        if ! test_write_permissions "$org" "$repo" "$default_branch" "$base_sha"; then
+            log_error "[DRY RUN] Write permission test failed - cannot create branches"
+            log_error "   This indicates insufficient permissions or branch protection rules"
+            REPOS_WITH_ERRORS+=("$org/$repo (write permission test failed)")
+            return 1
+        fi
+        log_success "[DRY RUN] Write permissions verified - can create branches"
+        log_info "[DRY RUN] Proceeding to create branch and files for PR testing"
     fi
     
     # Create new branch using API
@@ -669,8 +759,14 @@ process_repo() {
             continue
         fi
         
-        # Create commit message with DCO sign-off
-        local commit_msg="Update badge link: stages → maturity in $file_path"
+        # Create commit message with DCO sign-off (org-specific)
+        local commit_msg
+        if [ "$SELECTED_ORG" = "finos" ]; then
+            commit_msg="Update badge link: stages → maturity in $file_path"
+        elif [ "$SELECTED_ORG" = "finos-labs" ]; then
+            commit_msg="Update badge to be clickable link in $file_path"
+        fi
+        
         if [ -n "$current_user_name" ] && [ -n "$current_user_email" ]; then
             commit_msg="$commit_msg
 
@@ -713,44 +809,79 @@ Signed-off-by: $current_user_name <$current_user_email>"
     fi
     
     # Create pull request
-    log_info "Creating pull request for $org/$repo"
-    local pr_result
-    pr_result=$(gh pr create \
-        --repo "$org/$repo" \
-        --title "$PR_TITLE" \
-        --body "$PR_BODY" \
-        --head "$BRANCH_NAME" \
-        --base "$default_branch" 2>&1)
-    local pr_exit_code=$?
-    
-    if [ $pr_exit_code -eq 0 ]; then
-        log_success "Created PR for $org/$repo"
-        PRS_CREATED=$((PRS_CREATED + 1))
+    if [ "$DRY_RUN" = true ]; then
+        log_info "[DRY RUN] Testing PR metadata validation (gh pr create --dry-run)..."
+        log_warn "[DRY RUN] Note: --dry-run may not test push permissions - write permission test above validates that"
+        local pr_test_result
+        pr_test_result=$(gh pr create \
+            --repo "$org/$repo" \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --head "$BRANCH_NAME" \
+            --base "$default_branch" \
+            --dry-run 2>&1)
+        local pr_test_exit=$?
+        
+        if [ $pr_test_exit -eq 0 ]; then
+            log_success "[DRY RUN] PR metadata validation passed"
+            log_info "[DRY RUN] PR test output: $(echo "$pr_test_result" | head -3)"
+            log_info "[DRY RUN] Full workflow validated: write permissions ✓, branch creation ✓, file updates ✓, PR metadata ✓"
+            REPOS_WITH_CHANGES+=("$org/$repo")
+        else
+            log_error "[DRY RUN] PR metadata validation failed"
+            if echo "$pr_test_result" | grep -qiE "(rate limit|429)"; then
+                log_error "   Rate limit error detected"
+            elif echo "$pr_test_result" | grep -qiE "(unauthorized|forbidden|401|403)"; then
+                log_error "   Authentication/permission error detected"
+            else
+                log_error "   Error details: $(echo "$pr_test_result" | head -3)"
+            fi
+        fi
     else
-        log_error "Failed to create PR for $org/$repo"
-        # Check if it's a rate limit or auth error
-        if echo "$pr_result" | grep -qiE "(rate limit|429)"; then
-            log_error "   Rate limit error detected. Consider waiting before retrying."
-        elif echo "$pr_result" | grep -qiE "(unauthorized|forbidden|401|403)"; then
-            log_error "   Authentication/permission error detected."
+        log_info "Creating pull request for $org/$repo"
+        local pr_result
+        pr_result=$(gh pr create \
+            --repo "$org/$repo" \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --head "$BRANCH_NAME" \
+            --base "$default_branch" 2>&1)
+        local pr_exit_code=$?
+        
+        if [ $pr_exit_code -eq 0 ]; then
+            log_success "Created PR for $org/$repo"
+            PRS_CREATED=$((PRS_CREATED + 1))
+            REPOS_WITH_CHANGES+=("$org/$repo")
         else
-            log_error "   Error details: $(echo "$pr_result" | head -3)"
+            log_error "Failed to create PR for $org/$repo"
+            # Check if it's a rate limit or auth error
+            if echo "$pr_result" | grep -qiE "(rate limit|429)"; then
+                log_error "   Rate limit error detected. Consider waiting before retrying."
+            elif echo "$pr_result" | grep -qiE "(unauthorized|forbidden|401|403)"; then
+                log_error "   Authentication/permission error detected."
+            else
+                log_error "   Error details: $(echo "$pr_result" | head -3)"
+            fi
+            # Clean up the branch if PR creation fails
+            log_info "Cleaning up branch $BRANCH_NAME due to PR creation failure"
+            local delete_result
+            delete_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" "$org" "$repo" "delete branch after PR creation failure" -X DELETE 2>&1)
+            if [ $? -eq 0 ]; then
+                log_info "Successfully cleaned up branch $BRANCH_NAME"
+            else
+                log_warn "Could not clean up branch $BRANCH_NAME after PR creation failure"
+            fi
+            REPOS_WITH_ERRORS+=("$org/$repo (PR creation failed)")
         fi
-        # Clean up the branch if PR creation fails
-        log_info "Cleaning up branch $BRANCH_NAME due to PR creation failure"
-        local delete_result
-        delete_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" "$org" "$repo" "delete branch after PR creation failure" -X DELETE 2>&1)
-        if [ $? -eq 0 ]; then
-            log_info "Successfully cleaned up branch $BRANCH_NAME"
-        else
-            log_warn "Could not clean up branch $BRANCH_NAME after PR creation failure"
-        fi
-        REPOS_WITH_ERRORS+=("$org/$repo (PR creation failed)")
     fi
         
     log_success "Completed processing for $org/$repo"
     echo ""
 }
+
+# =============================================================================
+# MAIN PROCESSING LOGIC
+# =============================================================================
 
 # Main processing logic
 if [ -n "$TEST_REPO" ]; then
@@ -776,8 +907,8 @@ else
     for org in "${ORGS[@]}"; do
         log_info "Processing organization: $org"
         
-        # Get all repositories in the organization
-        repos=$(gh repo list "$org" --limit $GITHUB_API_LIMIT --json name -q '.[].name' 2>/dev/null)
+        # Get all repositories in the organization (excluding archived ones)
+        repos=$(gh repo list "$org" --limit $GITHUB_API_LIMIT --json name,isArchived -q '.[] | select(.isArchived == false) | .name' 2>/dev/null)
         
         if [ -z "$repos" ]; then
             log_warn "No repositories found in organization: $org"
@@ -787,14 +918,41 @@ else
         repo_count=$(echo "$repos" | wc -l | tr -d ' ')
         log_info "Found $repo_count repositories in $org"
         
+        # Check initial rate limit
+        log_info "Checking GitHub API rate limit..."
+        initial_remaining=$(check_rate_limit 2>/dev/null || echo "unknown")
+        if [ "$initial_remaining" != "unknown" ]; then
+            log_info "Initial rate limit: $initial_remaining requests remaining"
+        fi
+        
         # Process each repository
+        repo_index=0
         for repo in $repos; do
+            repo_index=$((repo_index + 1))
+            
+            # Check rate limit every 10 repos or if we're getting low
+            if [ $((repo_index % 10)) -eq 0 ] || [ "$repo_index" -eq 1 ]; then
+                remaining=$(check_rate_limit 2>/dev/null || echo "unknown")
+                if [ "$remaining" != "unknown" ]; then
+                    log_info "[$repo_index/$repo_count] Rate limit: $remaining requests remaining"
+                    # Wait if rate limit is too low
+                    wait_for_rate_limit
+                fi
+            fi
+            
             process_repo "$org" "$repo"
         done
     done
 fi
 
 log_success "Badge link update process completed!"
+
+# Check final rate limit
+log_info "Checking final GitHub API rate limit..."
+final_remaining=$(check_rate_limit 2>/dev/null || echo "unknown")
+if [ "$final_remaining" != "unknown" ]; then
+    log_info "Final rate limit: $final_remaining requests remaining"
+fi
 
 # Print summary
 echo ""
@@ -803,21 +961,12 @@ log_info "SUMMARY"
 log_info "=========================================="
 log_success "PRs Created: $PRS_CREATED"
 
-# Report repos with insufficient access
-if [ ${#INSUFFICIENT_ACCESS_REPOS[@]} -gt 0 ]; then
+# Report repos that received changes (successfully processed)
+if [ ${#REPOS_WITH_CHANGES[@]} -gt 0 ]; then
     echo ""
-    log_warn "Repositories with insufficient access (${#INSUFFICIENT_ACCESS_REPOS[@]} total):"
-    for repo in "${INSUFFICIENT_ACCESS_REPOS[@]}"; do
-        echo "  - $repo"
-    done
-fi
-
-# Report repos that were skipped
-if [ ${#REPOS_SKIPPED[@]} -gt 0 ]; then
-    echo ""
-    log_warn "Repositories skipped (${#REPOS_SKIPPED[@]} total):"
-    for repo in "${REPOS_SKIPPED[@]}"; do
-        echo "  - $repo"
+    log_success "Repositories with changes applied (${#REPOS_WITH_CHANGES[@]} total):"
+    for repo in "${REPOS_WITH_CHANGES[@]}"; do
+        echo "  ✓ $repo"
     done
 fi
 
@@ -830,12 +979,39 @@ if [ ${#REPOS_NO_CHANGES[@]} -gt 0 ]; then
     done
 fi
 
+# Report repos without badges
+if [ ${#REPOS_WITHOUT_BADGE[@]} -gt 0 ]; then
+    echo ""
+    log_warn "Repositories without badges (${#REPOS_WITHOUT_BADGE[@]} total):"
+    for repo in "${REPOS_WITHOUT_BADGE[@]}"; do
+        echo "  ⚠ $repo"
+    done
+fi
+
+# Report repos that were skipped
+if [ ${#REPOS_SKIPPED[@]} -gt 0 ]; then
+    echo ""
+    log_warn "Repositories skipped (${#REPOS_SKIPPED[@]} total):"
+    for repo in "${REPOS_SKIPPED[@]}"; do
+        echo "  - $repo"
+    done
+fi
+
 # Report repos with errors
 if [ ${#REPOS_WITH_ERRORS[@]} -gt 0 ]; then
     echo ""
     log_error "Repositories with errors (${#REPOS_WITH_ERRORS[@]} total):"
     for repo in "${REPOS_WITH_ERRORS[@]}"; do
-        echo "  - $repo"
+        echo "  ✗ $repo"
+    done
+fi
+
+# Report repos with insufficient access
+if [ ${#INSUFFICIENT_ACCESS_REPOS[@]} -gt 0 ]; then
+    echo ""
+    log_warn "Repositories with insufficient access (${#INSUFFICIENT_ACCESS_REPOS[@]} total):"
+    for repo in "${INSUFFICIENT_ACCESS_REPOS[@]}"; do
+        echo "  ✗ $repo"
     done
 fi
 
