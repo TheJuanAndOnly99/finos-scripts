@@ -29,7 +29,7 @@ configure_finos() {
 - Note: \`active\` stage has been changed to \`graduated\`
 
 > [!IMPORTANT]
-> Please review this PR manually, ensure that there are no other occurrences of the badge logic in other files and merge at your earliest convenience, preferably within the next 2 weeks. Email help@finos.org with any questions or concerns."
+> This PR was generated automatically. We kindly ask you to review it manually, confirm there are no other occurrences of the badge logic in other files, and merge at your earliest convenience (ideally within the next 2 weeks). If you have any questions or concerns, please email help@finos.org."
 }
 
 # Configuration for 'finos-labs' organization
@@ -46,7 +46,7 @@ configure_finos_labs() {
 - Badge is now wrapped in a link to: \`$BADGE_LINK_URL\`
 
 > [!IMPORTANT]
-> Please review this PR manually, ensure that there are no other occurrences of the badge logic in other files and merge at your earliest convenience, preferably within the next 2 weeks. Email help@finos.org with any questions or concerns."
+> This PR was generated automatically. We kindly ask you to review it manually, confirm there are no other occurrences of the badge logic in other files, and merge at your earliest convenience (ideally within the next 2 weeks). If you have any questions or concerns, please email help@finos.org."
 }
 
 # =============================================================================
@@ -58,7 +58,7 @@ SELECTED_ORG="finos-labs" # finos-labs or finos
 ORGS=()  # Populated from SELECTED_ORG, used for main processing loop
 
 # Script-specific configuration
-DRY_RUN=false
+DRY_RUN=true
 SKIP_EXISTING_PR=true
 TEST_REPO="finos-labs/test"
 
@@ -528,50 +528,72 @@ update_badge_urls_in_content_finos_labs() {
     # Pattern to match badge image (literal string, not regex)
     local replacement="[![badge-labs](https://user-images.githubusercontent.com/327285/230928932-7c75f8ed-e57b-41db-9fb7-a292a13a1e58.svg)]($BADGE_LINK_URL)"
     
+    # Process content line by line using awk to preserve exact structure
+    local temp_file=$(mktemp)
+    printf '%s' "$updated_content" > "$temp_file"
+    
+    # Check if original content had a trailing newline (before processing)
+    local had_trailing_newline=false
+    if [ "${content: -1}" = $'\n' ]; then
+        had_trailing_newline=true
+    fi
+    
     # First, check for incorrect FINOS badges (incubating, graduated, archived, active) and replace them
     # These should not be in finos-labs repos - replace with finos-labs badge
     # Match patterns like: ![FINOS - Incubating](...), [![FINOS - Incubating](...)](...), badge-incubating.svg, etc.
     if echo "$content" | grep -qiE "(FINOS.*(Incubating|Graduated|Archived|Active)|badge-(incubating|graduated|archived|active)\.svg)"; then
-        # Replace FINOS badge markdown patterns with finos-labs badge
-        # Process line by line and replace lines containing FINOS badges
-        local new_content=""
-        while IFS= read -r line || [ -n "$line" ]; do
-            if echo "$line" | grep -qiE "(FINOS.*(Incubating|Graduated|Archived|Active)|badge-(incubating|graduated|archived|active)\.svg)"; then
-                # Replace line with finos-labs badge
-                new_content="${new_content}${replacement}"$'\n'
-            else
-                new_content="${new_content}${line}"$'\n'
-            fi
-        done <<< "$updated_content"
-        updated_content="$new_content"
+        # Use awk to replace lines containing FINOS badges, preserving all other lines exactly
+        # Write to temp file directly to avoid command substitution stripping trailing newline
+        awk -v replacement="$replacement" '
+        /FINOS.*(Incubating|Graduated|Archived|Active)|badge-(incubating|graduated|archived|active)\.svg/ {
+            print replacement
+            next
+        }
+        { print }
+        ' "$temp_file" > "${temp_file}.new"
+        mv "${temp_file}.new" "$temp_file"
         file_updated=true
     fi
     
     # Check if correct finos-labs badge exists in content
-    if echo "$updated_content" | grep -qF "$BADGE_IMAGE"; then
+    local current_content=$(cat "$temp_file")
+    if echo "$current_content" | grep -qF "$BADGE_IMAGE"; then
         # Check if it's NOT already wrapped in a link (doesn't start with [)
-        if ! echo "$updated_content" | grep -qF "[$BADGE_IMAGE"; then
-            # Replace badge image with clickable link
-            # Process line by line to preserve all content and only replace the badge line
-            local final_content=""
-            while IFS= read -r line || [ -n "$line" ]; do
-                if echo "$line" | grep -qF "$BADGE_IMAGE"; then
-                    # Replace only this line's badge with the linked version
-                    final_content="${final_content}${replacement}"$'\n'
-                else
-                    # Keep all other lines unchanged
-                    final_content="${final_content}${line}"$'\n'
-                fi
-            done <<< "$updated_content"
-            updated_content="$final_content"
+        if ! echo "$current_content" | grep -qF "[$BADGE_IMAGE"; then
+            # Use awk to replace only lines containing the badge image
+            # Write to temp file directly to avoid command substitution stripping trailing newline
+            awk -v replacement="$replacement" -v badge="$BADGE_IMAGE" '
+            index($0, badge) > 0 {
+                print replacement
+                next
+            }
+            { print }
+            ' "$temp_file" > "${temp_file}.new"
+            mv "${temp_file}.new" "$temp_file"
             file_updated=true
         fi
     fi
     
     if [ "$file_updated" = true ]; then
-        echo "$updated_content"
+        # Read the final content from temp file
+        updated_content=$(cat "$temp_file")
+        
+        # Preserve original trailing newline behavior
+        # awk's print always adds a newline, so if original didn't have one, remove it
+        if [ "$had_trailing_newline" = false ]; then
+            # Original had no trailing newline, remove the one awk added
+            updated_content="${updated_content%$'\n'}"
+        fi
+        # If original had trailing newline, awk's print already added it, so we keep it
+        
+        # Clean up temp file
+        rm -f "$temp_file"
+        
+        printf '%s' "$updated_content"
         return 0
     else
+        # Clean up temp file
+        rm -f "$temp_file"
         return 1
     fi
 }
@@ -663,7 +685,9 @@ update_badge_urls_via_api() {
             local updated_content=$(update_badge_urls_in_content "$file_content" "$file_path")
             local update_exit_code=$?
             if [ $update_exit_code -eq 0 ] && [ -n "$updated_content" ] && [ "$updated_content" != "$file_content" ]; then
-                files_to_update+=("$file_path|$file_sha|$updated_content")
+                # Base64 encode content to preserve newlines and special characters when storing in array
+                local encoded_content=$(printf '%s' "$updated_content" | base64)
+                files_to_update+=("$file_path|$file_sha|$encoded_content")
                 log_info "Found file to update: $file_path"
             fi
         fi
@@ -723,6 +747,10 @@ process_repo() {
             REPOS_SKIPPED+=("$org/$repo (PR already exists)")
             return 0
         else
+            # Delete leftover branch so we can create a fresh one and open a new PR.
+            # Branch exists but no open PR usually means: previous PR was closed/merged,
+            # or branch was pushed but PR creation failed. We use a fixed branch name
+            # per run, so we must remove it before creating a new branch with the same name.
             log_warn "Branch $BRANCH_NAME exists on remote but no open PR found. Deleting remote branch."
             local delete_result
             delete_result=$(api_call_with_error_handling "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" "$org" "$repo" "delete branch $BRANCH_NAME" -X DELETE 2>&1)
@@ -822,10 +850,13 @@ process_repo() {
     
     # Update each file via API
     local files_updated=0
-    while IFS='|' read -r file_path file_sha file_content; do
+    while IFS='|' read -r file_path file_sha encoded_content; do
         if [ -z "$file_path" ] || [ -z "$file_sha" ]; then
             continue
         fi
+        
+        # Decode the base64-encoded content to restore newlines and special characters
+        local file_content=$(echo "$encoded_content" | base64 -d)
         
         # Create commit message with DCO sign-off (org-specific)
         local commit_msg
