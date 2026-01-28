@@ -196,7 +196,124 @@ init_config() {
 }
 
 # =============================================================================
-# USAGE INFORMATION
+# RATE LIMIT HANDLING
+# =============================================================================
+# Rate limit thresholds (as percentage of remaining quota)
+export RATE_LIMIT_WARN_THRESHOLD=20  # Warn when below 20% remaining
+export RATE_LIMIT_PAUSE_THRESHOLD=10 # Pause when below 10% remaining
+export RATE_LIMIT_RETRY_MAX=3        # Max retries for rate limit errors
+export RATE_LIMIT_RETRY_DELAY=60     # Initial retry delay in seconds
+
+# Function to check current GitHub API rate limit status
+# Returns: remaining requests (to stdout), exit code 0 on success
+check_rate_limit() {
+    local rate_limit_info=$(gh api rate_limit --jq '.resources.core' 2>/dev/null)
+    if [ -z "$rate_limit_info" ]; then
+        return 1
+    fi
+    
+    local remaining=$(echo "$rate_limit_info" | jq -r '.remaining' 2>/dev/null)
+    local limit=$(echo "$rate_limit_info" | jq -r '.limit' 2>/dev/null)
+    local reset_time=$(echo "$rate_limit_info" | jq -r '.reset' 2>/dev/null)
+    
+    if [ -z "$remaining" ] || [ "$remaining" = "null" ]; then
+        return 1
+    fi
+    
+    # Output remaining count
+    echo "$remaining"
+    
+    # Calculate percentage
+    if [ -n "$limit" ] && [ "$limit" != "null" ] && [ "$limit" -gt 0 ]; then
+        local percentage=$((remaining * 100 / limit))
+        
+        # Log warning if below threshold
+        if [ "$percentage" -lt "$RATE_LIMIT_PAUSE_THRESHOLD" ]; then
+            # Convert Unix timestamp to readable date (works on both Linux and macOS)
+            local reset_date
+            if date -r "$reset_time" '+%Y-%m-%d %H:%M:%S' &>/dev/null 2>&1; then
+                reset_date=$(date -r "$reset_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+            else
+                reset_date=$(date -d "@$reset_time" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "unknown")
+            fi
+            log_warn "⚠️  Rate limit low: $remaining/$limit remaining (${percentage}%)"
+            log_warn "   Rate limit resets at: $reset_date"
+            return 2  # Special exit code for pause threshold
+        elif [ "$percentage" -lt "$RATE_LIMIT_WARN_THRESHOLD" ]; then
+            log_warn "Rate limit getting low: $remaining/$limit remaining (${percentage}%)"
+        fi
+    fi
+    
+    return 0
+}
+
+# Function to wait if rate limit is too low
+# Returns: 0 if OK to proceed, 1 if should wait
+wait_for_rate_limit() {
+    local remaining=$(check_rate_limit)
+    local exit_code=$?
+    
+    if [ $exit_code -eq 2 ]; then
+        # Below pause threshold - wait until reset
+        local rate_limit_info=$(gh api rate_limit --jq '.resources.core' 2>/dev/null)
+        local reset_time=$(echo "$rate_limit_info" | jq -r '.reset' 2>/dev/null)
+        local current_time=$(date +%s)
+        local wait_seconds=$((reset_time - current_time + 10))  # Add 10s buffer
+        
+        if [ "$wait_seconds" -gt 0 ]; then
+            log_warn "Rate limit too low. Waiting ${wait_seconds}s until reset..."
+            sleep "$wait_seconds"
+            log_info "Rate limit reset. Continuing..."
+        fi
+    elif [ $exit_code -ne 0 ]; then
+        log_warn "Could not check rate limit. Proceeding with caution..."
+    fi
+    
+    return 0
+}
+
+# Function to retry API call with exponential backoff on rate limit errors
+# Usage: retry_on_rate_limit "gh api ..." [max_retries] [initial_delay]
+# Returns: exit code from final attempt
+retry_on_rate_limit() {
+    local api_command="$1"
+    local max_retries="${2:-$RATE_LIMIT_RETRY_MAX}"
+    local delay="${3:-$RATE_LIMIT_RETRY_DELAY}"
+    local attempt=1
+    
+    while [ $attempt -le $max_retries ]; do
+        # Check rate limit before attempting
+        local remaining=$(check_rate_limit 2>/dev/null)
+        if [ $? -eq 2 ]; then
+            wait_for_rate_limit
+        fi
+        
+        # Execute the command
+        eval "$api_command"
+        local exit_code=$?
+        
+        # If successful or not a rate limit error, return
+        if [ $exit_code -eq 0 ]; then
+            return 0
+        fi
+        
+        # Check if it's a rate limit error (would need to capture stderr)
+        # For now, we'll use a simpler approach: check rate limit and retry if low
+        if [ $attempt -lt $max_retries ]; then
+            local remaining=$(check_rate_limit 2>/dev/null)
+            if [ $? -eq 2 ] || [ "${remaining:-0}" -lt 100 ]; then
+                log_warn "Rate limit issue detected. Waiting ${delay}s before retry (attempt $attempt/$max_retries)..."
+                sleep "$delay"
+                delay=$((delay * 2))  # Exponential backoff
+            fi
+        fi
+        
+        attempt=$((attempt + 1))
+    done
+    
+    return $exit_code
+}
+
 # =============================================================================
 
 show_config() {

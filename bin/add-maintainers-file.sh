@@ -129,6 +129,7 @@ REPOS_NO_CHANGES=()
 REPOS_WITH_ERRORS=()
 REPOS_NO_MAINTAINERS=()
 REPOS_FILE_EXISTS=()  # Repos where MAINTAINERS.md already exists (needs manual validation)
+REPOS_ARCHIVED=()  # Repos that are archived (skipped)
 
 log_info "Starting MAINTAINERS.md file creation process"
 if [ -n "$CURRENT_USER" ]; then
@@ -288,6 +289,8 @@ pr_exists() {
 }
 
 # Function to check if user has maintainer/admin access
+# Note: This function is kept for backward compatibility but is no longer used
+# in process_repo since we now check archived status and access in one API call
 check_repo_access() {
     local org="$1"
     local repo="$2"
@@ -305,6 +308,28 @@ check_repo_access() {
     fi
     
     return 0
+}
+
+# Function to test write permissions by creating and deleting a test branch
+# This verifies we can actually push/create branches (not just read)
+test_write_permissions() {
+    local org="$1"
+    local repo="$2"
+    local base_branch="$3"
+    local base_sha="$4"
+    local test_branch_name=".test-write-permissions-$(date +%s)"
+    
+    # Try to create a test branch
+    if ! gh api -X POST "/repos/$org/$repo/git/refs" \
+        -f ref="refs/heads/$test_branch_name" \
+        -f sha="$base_sha" &>/dev/null; then
+        return 1  # Failed to create branch - no write permissions
+    fi
+    
+    # Immediately delete the test branch to clean up
+    gh api -X DELETE "/repos/$org/$repo/git/refs/heads/$test_branch_name" &>/dev/null
+    
+    return 0  # Successfully created and deleted - we have write permissions
 }
 
 # Function to check if a team is a FINOS team (should be ignored)
@@ -562,12 +587,30 @@ process_repo() {
     
     log_info "Processing repository: $org/$repo"
     
-    # Check if user has access to the repository
-    if ! check_repo_access "$org" "$repo"; then
+    # Check if user has access to the repository (this also gets repo info)
+    local repo_info=$(gh api "/repos/$org/$repo" 2>/dev/null)
+    if [ -z "$repo_info" ]; then
         log_error "⚠️  INSUFFICIENT ACCESS: $org/$repo - Cannot access repository or insufficient permissions. Skipping."
         INSUFFICIENT_ACCESS_REPOS+=("$org/$repo")
         return 1
     fi
+    
+    # Check if repository is archived (using the repo_info we already fetched)
+    local is_archived=$(echo "$repo_info" | jq -r '.archived // false' 2>/dev/null)
+    if [ "$is_archived" = "true" ]; then
+        log_warn "⚠️  ARCHIVED: $org/$repo - Repository is archived. Skipping."
+        REPOS_ARCHIVED+=("$org/$repo")
+        return 0
+    fi
+    
+    # Verify we can get the default branch (requires read access at minimum)
+    local default_branch=$(echo "$repo_info" | jq -r '.default_branch' 2>/dev/null)
+    if [ -z "$default_branch" ] || [ "$default_branch" = "null" ]; then
+        log_error "⚠️  INSUFFICIENT ACCESS: $org/$repo - Cannot determine default branch. Skipping."
+        INSUFFICIENT_ACCESS_REPOS+=("$org/$repo")
+        return 1
+    fi
+    log_info "Default branch: $default_branch"
         
     # Check if PR already exists
     if pr_exists "$org" "$repo" "$BRANCH_NAME"; then
@@ -600,10 +643,6 @@ process_repo() {
         log_info "  Found $maintainer_count maintainer(s)"
     fi
     
-    # Get default branch
-    default_branch=$(get_default_branch "$org" "$repo")
-    log_info "Default branch: $default_branch"
-    
     # Check if MAINTAINERS.md already exists using API (any location, any case)
     local existing_file_path
     existing_file_path=$(file_exists_in_repo "$org" "$repo" "$default_branch")
@@ -615,30 +654,66 @@ process_repo() {
     fi
     
     # Check if branch already exists on remote
-    if gh api "/repos/$org/$repo/git/ref/heads/$BRANCH_NAME" &>/dev/null; then
+    local branch_check_result
+    branch_check_result=$(gh api "/repos/$org/$repo/git/ref/heads/$BRANCH_NAME" 2>&1)
+    local branch_check_exit=$?
+    
+    if [ $branch_check_exit -eq 0 ] && [ -n "$branch_check_result" ]; then
         # Branch exists on remote - check if PR exists
         if pr_exists "$org" "$repo" "$BRANCH_NAME"; then
             log_warn "Branch $BRANCH_NAME already exists on remote with an open PR. Skipping."
             REPOS_SKIPPED+=("$org/$repo (PR already exists)")
             return 0
         else
-            log_warn "Branch $BRANCH_NAME exists on remote but no open PR found. Deleting remote branch."
-            gh api -X DELETE "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" &>/dev/null || log_warn "Could not delete remote branch"
+            if [ "$DRY_RUN" = true ]; then
+                log_info "[DRY RUN] Branch $BRANCH_NAME exists but no PR found. Would delete and recreate."
+            else
+                log_warn "Branch $BRANCH_NAME exists on remote but no open PR found. Deleting remote branch."
+                gh api -X DELETE "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" &>/dev/null || log_warn "Could not delete remote branch"
+            fi
         fi
+    elif [ $branch_check_exit -ne 0 ] && echo "$branch_check_result" | grep -qiE "(error|rate limit|unauthorized|forbidden)"; then
+        # Real API error (not just "branch doesn't exist")
+        log_warn "Error checking branch existence for $org/$repo: $(echo "$branch_check_result" | head -1)"
     fi
     
-    if [ "$DRY_RUN" = true ]; then
-        log_info "[DRY RUN] Would create MAINTAINERS.md file via API for $org/$repo"
-        log_info "[DRY RUN] Would create branch $BRANCH_NAME and PR"
-        return 0
-    fi
-    
-    # Get the SHA of the default branch head
-    local base_sha=$(gh api "/repos/$org/$repo/git/ref/heads/$default_branch" --jq '.object.sha' 2>/dev/null)
+    # Get the SHA of the default branch head (validate permissions/access)
+    local base_sha
+    base_sha=$(gh api "/repos/$org/$repo/git/ref/heads/$default_branch" --jq '.object.sha' 2>/dev/null)
     if [ -z "$base_sha" ]; then
-        log_error "Failed to get base SHA for $org/$repo"
+        log_error "Failed to get base SHA for $org/$repo (branch: $default_branch)"
+        log_error "   This may indicate the branch doesn't exist, API error, or insufficient permissions"
         REPOS_WITH_ERRORS+=("$org/$repo (failed to get base SHA)")
         return 1
+    fi
+    log_info "Base SHA validated: ${base_sha:0:7}... (permissions OK)"
+    
+    # Generate MAINTAINERS.md content (read-only operation - safe in DRY_RUN)
+    log_info "Generating MAINTAINERS.md file content..."
+    local maintainers_content=$(generate_maintainers_file "$org" "$repo" "$maintainers")
+    
+    # Validate content was generated
+    if [ -z "$maintainers_content" ]; then
+        log_error "Failed to generate MAINTAINERS.md content for $org/$repo"
+        REPOS_WITH_ERRORS+=("$org/$repo (content generation failed)")
+        return 1
+    fi
+    
+    # Get current user for DCO sign-off (read-only operation)
+    local current_user_name=$(gh api user --jq '.name // .login' 2>/dev/null || echo "")
+    local current_user_email=$(gh api user --jq '.email // ""' 2>/dev/null || echo "")
+    
+    # Test write permissions before proceeding (critical for DRY_RUN validation)
+    if [ "$DRY_RUN" = true ]; then
+        log_info "[DRY RUN] Testing write permissions (creating and deleting test branch)..."
+        if ! test_write_permissions "$org" "$repo" "$default_branch" "$base_sha"; then
+            log_error "[DRY RUN] Write permission test failed - cannot create branches"
+            log_error "   This indicates insufficient permissions or branch protection rules"
+            REPOS_WITH_ERRORS+=("$org/$repo (write permission test failed)")
+            return 1
+        fi
+        log_success "[DRY RUN] Write permissions verified - can create branches"
+        log_info "[DRY RUN] Proceeding to create branch and files for PR testing"
     fi
     
     # Create new branch using API
@@ -648,23 +723,6 @@ process_repo() {
         REPOS_WITH_ERRORS+=("$org/$repo (branch creation failed)")
         return 1
     fi
-    
-    # Generate MAINTAINERS.md content
-    log_info "Generating MAINTAINERS.md file..."
-    local maintainers_content=$(generate_maintainers_file "$org" "$repo" "$maintainers")
-    
-    # Validate content was generated
-    if [ -z "$maintainers_content" ]; then
-        log_error "Failed to generate MAINTAINERS.md content for $org/$repo"
-        # Clean up the branch we created
-        gh api -X DELETE "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" &>/dev/null
-        REPOS_WITH_ERRORS+=("$org/$repo (content generation failed)")
-        return 1
-    fi
-    
-    # Get current user for DCO sign-off
-    local current_user_name=$(gh api user --jq '.name // .login' 2>/dev/null || echo "")
-    local current_user_email=$(gh api user --jq '.email // ""' 2>/dev/null || echo "")
     
     # Create commit message with DCO sign-off
     local commit_msg="Add MAINTAINERS.md file"
@@ -685,21 +743,62 @@ Signed-off-by: $current_user_name <$current_user_email>"
     fi
     
     # Create pull request
-    log_info "Creating pull request for $org/$repo"
-    if gh pr create \
-        --repo "$org/$repo" \
-        --title "$PR_TITLE" \
-        --body "$PR_BODY" \
-        --head "$BRANCH_NAME" \
-        --base "$default_branch" &>/dev/null; then
-        log_success "Created PR for $org/$repo"
-        PRS_CREATED=$((PRS_CREATED + 1))
+    if [ "$DRY_RUN" = true ]; then
+        log_info "[DRY RUN] Testing PR metadata validation (gh pr create --dry-run)..."
+        log_warn "[DRY RUN] Note: --dry-run may not test push permissions - write permission test above validates that"
+        local pr_test_result
+        pr_test_result=$(gh pr create \
+            --repo "$org/$repo" \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --head "$BRANCH_NAME" \
+            --base "$default_branch" \
+            --dry-run 2>&1)
+        local pr_test_exit=$?
+        
+        if [ $pr_test_exit -eq 0 ]; then
+            log_success "[DRY RUN] PR metadata validation passed"
+            log_info "[DRY RUN] PR test output: $(echo "$pr_test_result" | head -3)"
+            log_info "[DRY RUN] Full workflow validated: write permissions ✓, branch creation ✓, file creation ✓, PR metadata ✓"
+        else
+            log_error "[DRY RUN] PR metadata validation failed"
+            if echo "$pr_test_result" | grep -qiE "(rate limit|429)"; then
+                log_error "   Rate limit error detected"
+            elif echo "$pr_test_result" | grep -qiE "(unauthorized|forbidden|401|403)"; then
+                log_error "   Authentication/permission error detected"
+            else
+                log_error "   Error details: $(echo "$pr_test_result" | head -3)"
+            fi
+        fi
     else
-        log_error "Failed to create PR for $org/$repo"
-        # Clean up the branch if PR creation fails
-        log_info "Cleaning up branch $BRANCH_NAME due to PR creation failure"
-        gh api -X DELETE "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" &>/dev/null
-        REPOS_WITH_ERRORS+=("$org/$repo (PR creation failed)")
+        log_info "Creating pull request for $org/$repo"
+        local pr_result
+        pr_result=$(gh pr create \
+            --repo "$org/$repo" \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" \
+            --head "$BRANCH_NAME" \
+            --base "$default_branch" 2>&1)
+        local pr_exit_code=$?
+        
+        if [ $pr_exit_code -eq 0 ]; then
+            log_success "Created PR for $org/$repo"
+            PRS_CREATED=$((PRS_CREATED + 1))
+        else
+            log_error "Failed to create PR for $org/$repo"
+            # Check if it's a rate limit or auth error
+            if echo "$pr_result" | grep -qiE "(rate limit|429)"; then
+                log_error "   Rate limit error detected. Consider waiting before retrying."
+            elif echo "$pr_result" | grep -qiE "(unauthorized|forbidden|401|403)"; then
+                log_error "   Authentication/permission error detected."
+            else
+                log_error "   Error details: $(echo "$pr_result" | head -3)"
+            fi
+            # Clean up the branch if PR creation fails
+            log_info "Cleaning up branch $BRANCH_NAME due to PR creation failure"
+            gh api -X DELETE "/repos/$org/$repo/git/refs/heads/$BRANCH_NAME" &>/dev/null
+            REPOS_WITH_ERRORS+=("$org/$repo (PR creation failed)")
+        fi
     fi
         
     log_success "Completed processing for $org/$repo"
@@ -730,8 +829,9 @@ else
     for org in "${ORGS[@]}"; do
         log_info "Processing organization: $org"
         
-        # Get all repositories in the organization
-        repos=$(gh repo list "$org" --limit $GITHUB_API_LIMIT --json name -q '.[].name' 2>/dev/null)
+        # Get all repositories in the organization (excluding archived ones)
+        # Using --json with archived field to filter, but we'll check in process_repo for safety
+        repos=$(gh repo list "$org" --limit $GITHUB_API_LIMIT --json name,isArchived -q '.[] | select(.isArchived == false) | .name' 2>/dev/null)
         
         if [ -z "$repos" ]; then
             log_warn "No repositories found in organization: $org"
@@ -741,14 +841,41 @@ else
         repo_count=$(echo "$repos" | wc -l | tr -d ' ')
         log_info "Found $repo_count repositories in $org"
         
+        # Check initial rate limit
+        log_info "Checking GitHub API rate limit..."
+        local initial_remaining=$(check_rate_limit 2>/dev/null || echo "unknown")
+        if [ "$initial_remaining" != "unknown" ]; then
+            log_info "Initial rate limit: $initial_remaining requests remaining"
+        fi
+        
         # Process each repository
+        local repo_index=0
         for repo in $repos; do
+            repo_index=$((repo_index + 1))
+            
+            # Check rate limit every 10 repos or if we're getting low
+            if [ $((repo_index % 10)) -eq 0 ] || [ "$repo_index" -eq 1 ]; then
+                local remaining=$(check_rate_limit 2>/dev/null || echo "unknown")
+                if [ "$remaining" != "unknown" ]; then
+                    log_info "[$repo_index/$repo_count] Rate limit: $remaining requests remaining"
+                    # Wait if rate limit is too low
+                    wait_for_rate_limit
+                fi
+            fi
+            
             process_repo "$org" "$repo"
         done
     done
 fi
 
 log_success "MAINTAINERS.md file creation process completed!"
+
+# Check final rate limit
+log_info "Checking final GitHub API rate limit..."
+local final_remaining=$(check_rate_limit 2>/dev/null || echo "unknown")
+if [ "$final_remaining" != "unknown" ]; then
+    log_info "Final rate limit: $final_remaining requests remaining"
+fi
 
 # Print summary
 echo ""
@@ -790,6 +917,15 @@ if [ ${#REPOS_NO_MAINTAINERS[@]} -gt 0 ]; then
     echo ""
     log_warn "Repositories with no maintainers (${#REPOS_NO_MAINTAINERS[@]} total):"
     for repo in "${REPOS_NO_MAINTAINERS[@]}"; do
+        echo "  - $repo"
+    done
+fi
+
+# Report archived repos that were skipped
+if [ ${#REPOS_ARCHIVED[@]} -gt 0 ]; then
+    echo ""
+    log_info "Archived repositories skipped (${#REPOS_ARCHIVED[@]} total):"
+    for repo in "${REPOS_ARCHIVED[@]}"; do
         echo "  - $repo"
     done
 fi
