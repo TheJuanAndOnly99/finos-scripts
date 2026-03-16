@@ -19,6 +19,8 @@ BRANCH_NAME="add-maintainers-file"
 PR_TITLE="Add MAINTAINERS.md file"
 PR_BODY="This PR adds a MAINTAINERS.md file listing all repository maintainers.
 
+This PR is part of a FINOS-wide initiative to standardize repository governance. Adding a MAINTAINERS.md file improves project transparency and helps contributors identify who can review their work.
+
 The maintainers are determined from:
 - Users with \`maintain\` role on the repository
 - Teams with \`maintain\` role on the repository (excluding FINOS organization teams)
@@ -29,8 +31,8 @@ Each maintainer entry includes their GitHub username, name, and email from their
 
 Please review this PR and:
 1. **Verify the maintainer list is complete and accurate**
-2. **Check that all maintainer details (name, email) are correct**
-3. **Update any incorrect information** (names, emails, etc.)**
+2. **Check that all maintainer details are correct**
+3. **Update any incorrect information**
 4. **If there are any missing maintainers** who should be included but were not automatically detected or if any maintainers are missing from the list, please email help@finos.org
 
 ## Sub-Repository Note
@@ -40,12 +42,14 @@ If this repository is a sub-repository of another main repository and the mainta
 \`\`\`markdown
 # Maintainers
 
-See the main [MAINTAINERS.md](https://github.com/org/main-repo/blob/main/MAINTAINERS.md) file.
+See the main [MAINTAINERS.md](https://github.com/org/{main-repo}/blob/main/MAINTAINERS.md) file.
 \`\`\`
 
 If you notice any issues or missing information, please either:
 - Comment on this PR with the corrections, or
 - Make the changes directly to this branch
+
+Please email help@finos.org if you have any questions or concerns.
 
 Thank you for your review!"
 
